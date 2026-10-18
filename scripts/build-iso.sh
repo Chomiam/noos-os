@@ -335,10 +335,9 @@ mkarchiso -v -w "$WORK_DIR" -o "$OUT_DIR" "$ASSEMBLED"
 # medium that boots into a menu nobody recognises.
 EFIBOOT_IMG="${WORK_DIR}/efiboot.img"
 [[ -e $EFIBOOT_IMG ]] || die "mkarchiso n'a pas reconstruit l'image EFI"
-if ! mdir -i "$EFIBOOT_IMG" ::/EFI/refind 2>/dev/null | grep -q refind_x64.efi; then
-  die "l'image EFI ne contient pas rEFInd : le média live ne chaînerait pas vers lui"
-fi
-echo "  rEFInd présent dans l'image EFI"
+# The files themselves are checked just below, by extraction — this only proves
+# the second pass rebuilt anything at all, which is what the markers above are
+# for and the one thing that could still go wrong silently.
 
 # The theme, and its configuration file with it.
 #
@@ -347,11 +346,42 @@ echo "  rEFInd présent dans l'image EFI"
 # no banner and no selection highlights, and said nothing about it. Checking the
 # images alone would have missed it — the file that was missing is the one that
 # *names* them.
-for expected in theme.conf themes/noos/background.png themes/noos/os_noos.png; do
-  mdir -i "$EFIBOOT_IMG" "::/EFI/refind/$expected" >/dev/null 2>&1 \
-    || die "l'image EFI n'a pas /EFI/refind/$expected : le thème du live ne s'appliquerait pas"
+# Extracted, not listed.
+#
+# Grepping a FAT directory listing for a name is fragile in a way that took two
+# tries to see: FAT gives every entry a short 8.3 name, and `os_noos.png` *fits*
+# in 8.3 — so it gets no long-name entry and `mdir` prints it as `os_noos  png`,
+# while `selection_big.png` is too long and is printed as `SELECT~1` with its
+# long name trailing. One of the two breaks any plain grep.
+#
+# `mcopy` has neither problem: it resolves 8.3 and long names alike, and it
+# fails on a name that is not there — which is the whole question being asked.
+# Its own scratch directory: this runs right after the second mkarchiso, long
+# before the verification step creates `.verify`. Reusing that one would have
+# made `set -u` abort the build on an unbound variable.
+readonly EFI_CHECK_DIR="${WORK_DIR}/efi-check"
+mkdir -p "$EFI_CHECK_DIR"
+
+readonly EFI_FILES=(
+  /EFI/refind/refind_x64.efi
+  /EFI/refind/refind.conf
+  /EFI/refind/themes/noos/theme.conf
+  /EFI/refind/themes/noos/background.png
+  /EFI/refind/themes/noos/os_noos.png
+  /EFI/refind/themes/noos/selection_big.png
+  /EFI/refind/themes/noos/selection_small.png
+)
+
+for file in "${EFI_FILES[@]}"; do
+  target="${EFI_CHECK_DIR}/$(basename "$file")"
+  mcopy -o -i "$EFIBOOT_IMG" "::${file}" "$target" 2>/dev/null \
+    || die "l'image EFI n'a pas ${file} : le média live ne s'amorcerait pas comme prévu"
+  # A zero-byte file is present and useless; the images are tens of kilobytes.
+  if [[ $(stat -c%s "$target") -eq 0 ]]; then
+    die "${file} est vide dans l'image EFI"
+  fi
 done
-echo "  thème du live présent (theme.conf et images)"
+echo "  média live dans l'image EFI (rEFInd, config, thème et ses 4 images)"
 
 step "Terminé"
 readonly ISO="$(ls "$OUT_DIR"/*.iso 2>/dev/null | head -1)"
