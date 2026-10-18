@@ -559,7 +559,7 @@ check "paramètres du noyau live" "quiet splash + archiso"
 # systemd-boot's own menu — a screen nobody recognises as noos-os.
 if xorriso -osirrox on -indev "$ISO" \
      -extract /loader/entries/01-refind.conf "$VERIFY_DIR/entry.conf" 2>/dev/null \
-   && grep -qF 'efi /EFI/refind/refind_x64.efi' "$VERIFY_DIR/entry.conf"; then
+   && grep -qE '^efi[[:space:]]+/EFI/refind/refind_x64\.efi' "$VERIFY_DIR/entry.conf"; then
   check "chaînage systemd-boot vers rEFInd" "oui"
 else
   die "l'entrée systemd-boot ne chaîne pas vers rEFInd"
