@@ -152,6 +152,18 @@ pub const SCANFOR: &str = "internal,external,optical,netboot,manual";
 /// There is no `use_nvram false`: rEFInd may maintain its own boot order in
 /// NVRAM, and suppressing that is a workaround for Macs, not for this.
 ///
+/// **The kernel is hidden from auto-detection, so the entry below is the only
+/// one.** rEFInd scans the ESP, finds any kernel with an EFI stub, and offers it
+/// as its own entry — a second line in the menu, beside ours, for the same
+/// kernel. On the first installed system this produced exactly that, and the
+/// auto-detected line was on top: it boots correctly (it reads
+/// `refind_linux.conf`) while ours did not, so the menu offered the *unbranded*
+/// entry first and the branded one second, and picking the branded one looked
+/// like a broken installation.
+///
+/// One entry, ours, with the name, the icon and a command line written here and
+/// nowhere else.
+///
 /// **The stanza carries its own `options`, and it must.** `refind_linux.conf` is
 /// only consulted for kernels rEFInd *found by scanning* — an entry written here
 /// takes its command line from this line and nowhere else. Without it the kernel
@@ -185,6 +197,11 @@ pub fn refind_conf(btrfs_uuid: &str, swap_uuid: Option<&str>, kernel: Kernel) ->
          # Replaces rEFInd's list rather than adding to it — see the note on\n\
          # SCANFOR in installer/core/src/refind.rs.\n\
          scanfor {scanfor}\n\
+         \n\
+         # The kernel this file declares below, and the systemd-boot binary the\n\
+         # live medium chains through. Both would otherwise be offered a second\n\
+         # time, by auto-detection.\n\
+         dont_scan_files bootx64.efi,{kernel}\n\
          \n\
          include themes/{theme}/theme.conf\n\
          \n\
@@ -271,6 +288,26 @@ mod tests {
         let conf = refind_conf(BTRFS, None, Kernel::Lts);
         assert!(!conf.contains("loader /vmlinuz-linux\n"));
         assert!(!conf.contains("initrd /initramfs-linux.img\n"));
+    }
+
+    #[test]
+    fn the_kernel_is_not_offered_twice() {
+        // Auto-detection would list the same kernel beside our entry, without
+        // our name and without our icon. Two lines for one system, and the
+        // unbranded one first — which is what the first installation produced.
+        for kernel in Kernel::all() {
+            let conf = refind_conf(BTRFS, None, kernel);
+            let hidden = conf
+                .lines()
+                .find(|l| l.trim_start().starts_with("dont_scan_files"))
+                .unwrap_or_else(|| panic!("{kernel:?} : aucun dont_scan_files"));
+            assert!(
+                hidden.contains(kernel.image()),
+                "le noyau serait listé deux fois : {hidden}"
+            );
+            // The live medium's chainload binary, same reason.
+            assert!(hidden.contains("bootx64.efi"));
+        }
     }
 
     #[test]
