@@ -49,12 +49,27 @@ nvme-cli
 hdparm
 
 ## Bootloader tooling --------------------------------------------------------
-# Only `efibootmgr`. The *target*'s bootloader is rEFInd, installed by pacstrap
-# and copied out of the target's own `/usr/share/refind` — the live medium has
-# no reason to carry it. What the live medium boots with is rEFInd's own copy,
+# `efibootmgr`. The *target*'s bootloader is rEFInd, installed by pacstrap and
+# copied out of the target's own `/usr/share/refind` — the live medium has no
+# reason to carry it. What the live medium boots with is rEFInd's own copy,
 # staged into the EFI image by scripts/build-iso.sh, not a package here.
 
 efibootmgr
+
+# The UEFI shell, as the recovery path of last resort.
+#
+# mkarchiso copies `Shell_Full.efi` to `/shellx64.efi` at the ISO root *and*
+# into the EFI image, and rEFInd picks up anything named `shell*.efi` on a
+# volume it can read — which makes the shell a menu entry on this medium.
+#
+# Worth the megabyte here in a way it would not be elsewhere: the medium is
+# UEFI-only, so there is no BIOS fallback behind it, and its boot chain —
+# rEFInd chainloaded from systemd-boot, reading its kernel off the ISO9660
+# volume — is new. A shell is what turns "it will not boot" into something a
+# person can look at. Without the package mkarchiso notes the absence and
+# carries on, which is how it went unnoticed until now.
+
+edk2-shell
 
 ## Networking ----------------------------------------------------------------
 # systemd-networkd (part of systemd) handles the live medium; wpa_supplicant
