@@ -1068,7 +1068,11 @@ impl<'a> Installer<'a> {
 
         exec::write_file(
             format!("{root}/refind.conf"),
-            &refind::refind_conf(self.config.kernel),
+            &refind::refind_conf(
+                &self.uuids.btrfs,
+                self.uuids.swap.as_deref(),
+                self.config.kernel,
+            ),
             0o644,
         )?;
         exec::write_file(

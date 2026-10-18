@@ -187,7 +187,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
     );
     println!(
         "===== /boot/EFI/refind/refind.conf =====\n{}",
-        refind::refind_conf(config.kernel)
+        refind::refind_conf(btrfs_uuid, swap_uuid, config.kernel)
     );
     println!(
         "===== /boot/refind_linux.conf =====\n{}",
