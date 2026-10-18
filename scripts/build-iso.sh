@@ -93,6 +93,35 @@ as_builder "
 [[ -x "$INSTALLER_BIN" ]] || die "binaire introuvable après compilation : $INSTALLER_BIN"
 echo "  $(du -h "$INSTALLER_BIN" | cut -f1)  $INSTALLER_BIN"
 
+# The Flathub remote is committed, but its signing key rotates. Regenerating it
+# against the published definition keeps the image current; a failure here is
+# only a warning, because the committed copy is still a working one.
+step "Définition du dépôt Flathub"
+if "${ROOT}/scripts/generate-flatpak-remote.sh" >/dev/null 2>&1; then
+  echo "  à jour"
+else
+  echo "  avertissement : Flathub injoignable, la copie versionnée est conservée"
+fi
+
+# The AUR packages, built here and carried on the medium.
+#
+# This is what keeps the installation from compiling them: two of the four
+# build a GraalVM native image, and that build fails under makepkg inside the
+# installer's chroot — see installer/core/src/aur.rs. Building them now, as a
+# normal user on a real system, is the whole point.
+#
+# A failure is a warning and not an error: an ISO without them still installs a
+# complete system, falling back to building from the AUR at install time. It is
+# slower and needs the network, but it is not broken.
+step "Paquets AUR préconstruits"
+readonly AUR_STAGE="${ROOT}/.build/aur-packages"
+if as_builder "'${ROOT}/scripts/build-aur-packages.sh' '${AUR_STAGE}'"; then
+  echo "  $(ls -1 "${AUR_STAGE}"/*.pkg.tar.zst 2>/dev/null | wc -l) paquets prêts"
+else
+  echo "  avertissement : construction impossible — l'installation les compilera depuis l'AUR"
+  echo "                 (plus lent, et il faut le réseau ; voir installer/core/src/aur.rs)"
+fi
+
 step "Assemblage du profil"
 # The profile is copied rather than written to in place, so the compiled binary
 # never lands in the source tree.
@@ -101,6 +130,17 @@ mkdir -p "$ASSEMBLED"
 cp -a "${PROFILE}/." "$ASSEMBLED/"
 install -Dm755 "$INSTALLER_BIN" "${ASSEMBLED}/airootfs/usr/bin/noos-installer"
 echo "  installateur -> airootfs/usr/bin/noos-installer"
+
+# The prebuilt AUR packages, into the medium's own filesystem.
+#
+# The path is not free: it is `aur::DIR` in the installer, which copies from
+# there into the target. The two have to agree, and nothing but this comment
+# says so.
+if compgen -G "${AUR_STAGE}/*.pkg.tar.zst" > /dev/null; then
+  mkdir -p "${ASSEMBLED}/airootfs/var/cache/noos-aur"
+  cp -a "${AUR_STAGE}"/*.pkg.tar.zst "${ASSEMBLED}/airootfs/var/cache/noos-aur/"
+  echo "  $(ls -1 "${ASSEMBLED}/airootfs/var/cache/noos-aur" | wc -l) paquets AUR -> airootfs/var/cache/noos-aur"
+fi
 
 step "Construction de l'ISO"
 mkdir -p "$OUT_DIR"
@@ -370,6 +410,25 @@ if xorriso -osirrox on -indev "$ISO" \
   check "paramètre noyau splash" "oui"
 else
   die "l'entrée de démarrage ne contient pas 'splash' : pas d'écran de démarrage"
+fi
+
+# The prebuilt AUR packages, when this build produced any.
+#
+# Checked on the finished squashfs rather than on the staging directory: the
+# installer looks for them at one exact path, and packages that reached the
+# profile but not the image would stay invisible until an installation tried to
+# use them — the failure mode this whole project keeps meeting.
+if [[ -d "${ASSEMBLED}/airootfs/var/cache/noos-aur" ]]; then
+  STAGED="$(ls -1 "${ASSEMBLED}/airootfs/var/cache/noos-aur" 2>/dev/null | grep -c '\.pkg\.tar\.zst' || true)"
+  IN_IMAGE="$(
+    unsquashfs -l "$VERIFY_DIR/airootfs.sfs" var/cache/noos-aur 2>/dev/null \
+      | grep -c '\.pkg\.tar\.zst' || true
+  )"
+  if [[ "$STAGED" -gt 0 && "$IN_IMAGE" -ge "$STAGED" ]]; then
+    check "paquets AUR embarqués" "$IN_IMAGE"
+  else
+    die "$STAGED paquets préparés, $IN_IMAGE dans l'ISO : l'installateur ne les trouvera pas"
+  fi
 fi
 
 cat <<EOF

@@ -68,7 +68,12 @@ pub const UNITS: &[&str] = &[
 pub const REQUIRED_EXTRA_PACKAGES: &[&str] = &["inotify-tools"];
 
 /// AUR packages that make up the snapshot chain.
-pub const AUR_PACKAGES: &[&str] = &["limine-mkinitcpio-hook", "limine-snapper-sync"];
+///
+/// [`crate::aur::PACKAGES`] is the list that matters now: these two are built
+/// when the ISO is built and ship on the medium, so they are named there with
+/// everything else the image carries prebuilt. The test below keeps the two
+/// from drifting apart.
+pub const SNAPSHOT_CHAIN_PACKAGES: &[&str] = &["limine-mkinitcpio-hook", "limine-snapper-sync"];
 
 /// Renders `/etc/limine-snapper-sync.conf`.
 pub fn limine_snapper_sync_conf(resume_uuid: Option<&str>) -> String {
@@ -186,6 +191,21 @@ mod tests {
     fn inotify_tools_is_required() {
         // It is only an optdepend upstream, but without it the watcher is inert.
         assert!(REQUIRED_EXTRA_PACKAGES.contains(&"inotify-tools"));
+    }
+
+    #[test]
+    fn the_snapshot_chain_is_what_the_image_ships() {
+        // These two are the point of the distribution, and they are precisely
+        // the packages that cannot be built during installation: both compile
+        // a GraalVM native image. If one of them ever dropped out of
+        // `aur::PACKAGES` the installation would still report success, without
+        // a snapshot menu anywhere.
+        for package in SNAPSHOT_CHAIN_PACKAGES {
+            assert!(
+                crate::aur::PACKAGES.contains(package),
+                "{package} doit être préconstruit et embarqué sur le média"
+            );
+        }
     }
 
     #[test]

@@ -7,6 +7,7 @@
 
 use std::path::Path;
 
+use crate::aur;
 use crate::btrfs;
 use crate::config::{Firmware, InstallConfig};
 use crate::desktop;
@@ -1273,13 +1274,127 @@ impl<'a> Installer<'a> {
     /// The only step that needs the network, and the only one that can fail
     /// without dooming the installation: the system is already complete and
     /// bootable before it runs.
+    /// Installs the AUR packages: from the medium's copies first, from the AUR
+    /// only for what is left over.
+    ///
+    /// The order is the point. The toolchain-heavy packages — two of which
+    /// build a GraalVM native image, one of which builds with Zig — are
+    /// compiled when the ISO is built and carried on the medium, so the usual
+    /// case installs them offline in seconds and never goes near Gradle, Zig or
+    /// the network. [`crate::aur`] records why building them here does not
+    /// work.
+    ///
+    /// What the medium does not carry falls back to `yay`, which is what keeps
+    /// an ISO built without those packages usable — just slower to install.
+    /// And the medium's packages are installed even when the user declined AUR
+    /// support: they are local files, and they are the snapshot chain the
+    /// distribution exists for.
     fn install_aur_support(&mut self) -> Result<()> {
         self.require_target()?;
-        if !self.config.enable_aur {
-            self.note("support AUR non demandé, étape ignorée");
+
+        self.install_from_medium()?;
+
+        let mut wanted: Vec<&str> = aur::PACKAGES.to_vec();
+        if !self.config.install_shelly {
+            wanted.retain(|name| *name != "shelly");
+        }
+        // A legacy NVIDIA branch is an AUR package, so it rides along here
+        // rather than with the repository packages. It is never shipped
+        // prebuilt: which branch is right depends on the card in the machine.
+        if let (Some(branch), Some(gpu::NvidiaPlan::Legacy)) =
+            (self.config.nvidia_legacy, self.codec.nvidia)
+        {
+            wanted.push(branch.package());
+        }
+
+        let missing = self.missing_packages(&wanted)?;
+        if missing.is_empty() {
+            self.note(format!("{} paquets AUR installés", wanted.len()));
             return Ok(());
         }
 
+        if !self.config.enable_aur {
+            // The medium covers what it covers; the rest needs the network and
+            // the user said no. Reported, not failed: the system is complete.
+            self.note(format!(
+                "support AUR refusé : {} paquet(s) laissé(s) de côté — {}",
+                missing.len(),
+                missing.join(", ")
+            ));
+            return Ok(());
+        }
+
+        self.build_from_aur(&missing)
+    }
+
+    /// Installs the packages the ISO carries, straight from the live medium.
+    ///
+    /// No network and no compiler: the files are copied into the target and
+    /// handed to `pacman -U`. The copy is not ceremony — they have to be inside
+    /// the chroot for pacman to reach them.
+    fn install_from_medium(&self) -> Result<()> {
+        let listing: Vec<String> = match std::fs::read_dir(aur::DIR) {
+            Ok(entries) => entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect(),
+            // No directory means an ISO built without the prebuilt packages,
+            // which is a supported shape and not an error.
+            Err(_) => Vec::new(),
+        };
+
+        let files = aur::package_files(&listing);
+        if files.is_empty() {
+            self.note("aucun paquet AUR préconstruit sur le média");
+            return Ok(());
+        }
+
+        let staged = format!("{MOUNT_ROOT}{}", aur::DIR);
+        exec::make_dir(&staged, 0o755)?;
+
+        let mut paths: Vec<String> = Vec::with_capacity(files.len());
+        for name in &files {
+            let source = format!("{}/{}", aur::DIR, name);
+            let destination = format!("{staged}/{name}");
+            std::fs::copy(&source, &destination).map_err(|e| Error::io(&destination, e))?;
+            paths.push(format!("{}/{}", aur::DIR, name));
+        }
+
+        self.note(format!("{} paquets AUR préconstruits", files.len()));
+        // `--needed` so a re-run does not reinstall what is already there.
+        let mut args: Vec<&str> = vec!["-U", "--noconfirm", "--needed"];
+        args.extend(paths.iter().map(String::as_str));
+        self.runner.stream_in(Some(MOUNT_ROOT), "pacman", &args)?;
+
+        Ok(())
+    }
+
+    /// Which of `wanted` the target does not have yet.
+    ///
+    /// Asked of pacman rather than worked out from the file names: a package
+    /// file is `<name>-<version>-<release>-<arch>.pkg.tar.zst`, and pulling a
+    /// package name back out of that string is guesswork where pacman already
+    /// knows the answer.
+    ///
+    /// The returned slice borrows from `wanted`, not from `self`. Eliding the
+    /// lifetime would tie it to `&self`, and the caller then cannot pass the
+    /// result to a method taking `&mut self` — which is exactly what it does
+    /// next. (`'p`, not `'a`: the `impl` block already owns `'a`.)
+    fn missing_packages<'p>(&self, wanted: &[&'p str]) -> Result<Vec<&'p str>> {
+        let installed = self.runner.capture_in(MOUNT_ROOT, "pacman", &["-Qq"])?;
+        Ok(wanted
+            .iter()
+            .copied()
+            .filter(|name| !installed.lines().any(|line| line == *name))
+            .collect())
+    }
+
+    /// The fallback: build from the AUR what the medium did not carry.
+    ///
+    /// The only part of the installation that needs both the network and a
+    /// compiler, and therefore the only part that can reasonably fail. The
+    /// system is complete and bootable by the time it runs.
+    fn build_from_aur(&mut self, missing: &[&str]) -> Result<()> {
         self.runner.stream_in(
             Some(MOUNT_ROOT),
             "useradd",
@@ -1291,24 +1406,14 @@ impl<'a> Installer<'a> {
             0o440,
         )?;
 
-        // yay-bin rather than yay: the prebuilt binary avoids compiling Go
-        // inside the chroot, which would add minutes to every installation.
-        self.build_aur_package(AUR_HELPER_PACKAGE)?;
-
-        let mut wanted: Vec<&str> = snapshots::AUR_PACKAGES.to_vec();
-        wanted.extend_from_slice(snapshots::REQUIRED_EXTRA_PACKAGES);
-        if self.config.install_shelly {
-            wanted.push("shelly");
-        }
-        // A legacy NVIDIA branch is an AUR package, so it rides along here
-        // rather than with the repository packages.
-        if let (Some(branch), Some(gpu::NvidiaPlan::Legacy)) =
-            (self.config.nvidia_legacy, self.codec.nvidia)
-        {
-            wanted.push(branch.package());
+        // The helper itself: normally on the medium, and built here only when
+        // the ISO was assembled without it.
+        if !self.missing_packages(&[AUR_HELPER_PACKAGE])?.is_empty() {
+            self.note(format!("{AUR_HELPER} absent du média, compilation"));
+            self.build_aur_package(AUR_HELPER_PACKAGE)?;
         }
 
-        for package in wanted {
+        for package in missing {
             self.note(format!("AUR : {package}"));
             self.runner.stream_in(
                 Some(MOUNT_ROOT),
@@ -1567,6 +1672,15 @@ pub fn package_list(config: &InstallConfig, codec: &CodecPlan) -> Vec<String> {
 
     // Flatpak, AppImage and Java.
     extend_str(&mut packages, APPLICATION_RUNTIMES);
+
+    // The snapshot watcher's runtime dependency.
+    //
+    // It is a repository package, but it used to be left to the AUR step —
+    // which meant that step failing, or being skipped, left
+    // `limine-snapper-sync` installed and inert: the watcher never sees a
+    // snapshot appear, so the boot menu never gains an entry, and nothing
+    // anywhere says why.
+    extend_str(&mut packages, snapshots::REQUIRED_EXTRA_PACKAGES);
 
     // CPU microcode.
     //

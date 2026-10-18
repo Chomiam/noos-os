@@ -6,6 +6,7 @@
 //! pure function, so it can be verified without root; only [`exec`] and
 //! [`install`] touch the machine.
 
+pub mod aur;
 pub mod btrfs;
 pub mod config;
 pub mod desktop;
