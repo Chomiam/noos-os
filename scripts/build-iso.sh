@@ -227,13 +227,36 @@ install -d -m 0755 "${ISO_TREE}/EFI/refind" \
   "${ISO_TREE}/EFI/refind/drivers_x64" \
   "${ISO_TREE}/EFI/refind/themes/noos"
 
-install -m 0644 /usr/share/refind/refind_x64.efi "${ISO_TREE}/EFI/refind/"
+# rEFInd's runtime files, copied whole.
+#
+# **`icons/` is not decoration — without it rEFInd refuses to draw.** Its own
+# manual, twice over:
+#
+#   Text-only mode is implicitly set if rEFInd cannot find either a subdirectory
+#   called `icons` or a subdirectory named by `icons_dir`.
+#
+# The first build of this medium copied only the binary and one driver, so the
+# menu came up in text mode — the blue bar and the plain list — and the theme
+# was never going to appear whatever it contained. That is what the first real
+# boot showed, and it was read as the machine's fault rather than this one's.
+#
+# `fonts/` is the same story for text: rEFInd's font is a PNG image, and the
+# Arch wiki's installation steps say to copy both directories.
+install -d -m 0755 "${ISO_TREE}/EFI/refind/icons" \
+  "${ISO_TREE}/EFI/refind/fonts" \
+  "${ISO_TREE}/EFI/refind/drivers_x64"
 
-# The ISO9660 driver, so rEFInd can read the kernel off the medium whatever the
-# firmware can manage on its own. rEFInd inherits the firmware's filesystems,
-# and this makes the medium readable on a machine whose UEFI stops at FAT.
-install -m 0644 /usr/share/refind/drivers_x64/iso9660_x64.efi \
-  "${ISO_TREE}/EFI/refind/drivers_x64/"
+install -m 0644 /usr/share/refind/refind_x64.efi "${ISO_TREE}/EFI/refind/"
+cp -a /usr/share/refind/icons/. "${ISO_TREE}/EFI/refind/icons/"
+cp -a /usr/share/refind/fonts/. "${ISO_TREE}/EFI/refind/fonts/"
+
+# Every driver the package carries, and not just the one this medium needs.
+#
+# rEFInd inherits the firmware's filesystems, which on a UEFI PC is FAT and
+# ISO9660, so `iso9660_x64.efi` is what makes the medium's own volume readable.
+# The rest cost a fraction of a megabyte and are what let a machine see a disk
+# it otherwise could not — the point of a live medium.
+cp -a /usr/share/refind/drivers_x64/. "${ISO_TREE}/EFI/refind/drivers_x64/"
 
 # The theme, from the one committed copy.
 install -m 0644 "${PROFILE}/airootfs/usr/share/noos/refind-theme/"*.png \
@@ -388,6 +411,11 @@ readonly EFI_FILES=(
   /EFI/refind/themes/noos/os_noos.png
   /EFI/refind/themes/noos/selection_big.png
   /EFI/refind/themes/noos/selection_small.png
+  # Not decoration: without an icons directory rEFInd silently runs in
+  # text-only mode, whatever the theme says.
+  /EFI/refind/icons/os_linux.png
+  /EFI/refind/fonts/liberation-mono-regular-14.png
+  /EFI/refind/drivers_x64/iso9660_x64.efi
 )
 
 for file in "${EFI_FILES[@]}"; do

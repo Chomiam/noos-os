@@ -1033,6 +1033,28 @@ impl<'a> Installer<'a> {
             std::fs::copy(&source, &target).map_err(|e| Error::io(&source, e))?;
         }
 
+        // rEFInd's own files, without which it refuses to draw.
+        //
+        // **`icons/` decides between graphics and text.** Its manual: "Text-only
+        // mode is implicitly set if rEFInd cannot find either a subdirectory
+        // called `icons` or a subdirectory named by `icons_dir`." The first
+        // installation this installer produced had the menu in text mode for
+        // exactly that reason — the theme was complete on the ESP and could
+        // never have been shown.
+        //
+        // `fonts/` is the same for text itself: rEFInd's font is a PNG image.
+        //
+        // The drivers stay behind deliberately. They exist to read filesystems
+        // the firmware cannot — an ISO9660 medium, another system's ext4 — and
+        // on an installed machine the kernel reads the root and the ESP is FAT.
+        // They would be dead weight on a 1 GiB boot partition.
+        for (dir, from) in [("icons", "icons"), ("fonts", "fonts")] {
+            let source = format!("{MOUNT_ROOT}/usr/share/refind/{from}");
+            let target = format!("{root}/{dir}");
+            exec::make_dir(&target, 0o755)?;
+            Self::copy_dir(&source, &target)?;
+        }
+
         // No directory is created for the snapshot stanzas, and this is
         // deliberate: `refind-btrfs` writes them beside `refind.conf` and adds
         // its own `include` lines, both named in its own configuration. An
@@ -1096,6 +1118,27 @@ impl<'a> Installer<'a> {
         }
 
         self.note(format!("rEFInd installé ({icons} images de thème)"));
+        Ok(())
+    }
+
+    /// Copies a directory tree, one file at a time.
+    ///
+    /// Hand-written rather than shelling out to `cp -a`: this runs in the
+    /// installer, which links no libc helper for it, and the trees here are
+    /// flat enough that the recursion costs a few lines.
+    fn copy_dir(from: &str, to: &str) -> Result<()> {
+        for entry in std::fs::read_dir(from).map_err(|e| Error::io(from, e))? {
+            let entry = entry.map_err(|e| Error::io(from, e))?;
+            let name = entry.file_name();
+            let target = format!("{to}/{}", name.to_string_lossy());
+            if entry.path().is_dir() {
+                exec::make_dir(&target, 0o755)?;
+                Self::copy_dir(&entry.path().to_string_lossy(), &target)?;
+            } else {
+                std::fs::copy(entry.path(), &target)
+                    .map_err(|e| Error::io(&target, e))?;
+            }
+        }
         Ok(())
     }
 
