@@ -1598,12 +1598,45 @@ impl<'a> Installer<'a> {
         )?;
 
         self.verify_theme()?;
+        self.install_flatpak_theme();
 
         self.note(format!(
             "thème sombre appliqué (GTK, Qt 5 et 6, Electron) — thème d'icônes {}",
             theme::ICON_THEME
         ));
         Ok(())
+    }
+
+    /// Brings the GTK 3 theme into the Flatpak sandbox.
+    ///
+    /// **Deliberately cannot fail.** It is the only part of the installation that
+    /// needs the network *and* a working bubblewrap sandbox, and neither is
+    /// required for a usable system: a Flatpak application merely draws a light
+    /// GTK 3 theme in a dark desktop, which is a blemish, not a fault.
+    ///
+    /// The failure this exists to survive is real and documented: the
+    /// `apply_extra` step of some extensions needs bubblewrap to build its
+    /// sandbox, and where that is refused the installation stops with a message
+    /// about `exit status 256` that names nothing. The forum answer is to set the
+    /// setuid bit on `bwrap`; that is not done here. Arch deliberately ships
+    /// bubblewrap without it, and a distribution's installer should not quietly
+    /// remove a hardening measure to make one cosmetic thing work.
+    fn install_flatpak_theme(&self) {
+        let args = theme::flatpak_install_args();
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+
+        match self
+            .runner
+            .stream_in(Some(MOUNT_ROOT), "flatpak", &borrowed)
+        {
+            Ok(()) => self.note("thème GTK 3 installé pour Flatpak"),
+            Err(err) => self.note(format!(
+                "thème GTK 3 de Flatpak non installé ({err}) — les applications GTK 3 du bac à sable \
+                 resteront claires. À reprendre après la première connexion :\n    \
+                 flatpak install flathub {}",
+                theme::FLATPAK_GTK3_THEME
+            )),
+        }
     }
 
     /// Reads the applied theme back out of the target's own gsettings.

@@ -118,7 +118,37 @@ pub const QT_ENVIRONMENT_FILE: &str = "/etc/environment.d/10-noos-qt.conf";
 /// Flatpak applications cannot see the host's `/usr/share/themes`, so the theme
 /// has to exist *inside* the runtime. GTK 4 applications need none of this — they
 /// ask the settings portal, which reads the host — but GTK 3 ones do.
+///
+/// Verified on Flathub rather than assumed: `org.gtk.Gtk3theme.Adwaita-dark`
+/// resolves and describes itself as "Dark variant of the Adwaita GTK theme".
+///
+/// There is **no** equivalent for the icon theme — the Flathub id
+/// `org.freedesktop.Platform.Icontheme.Papirus` does not resolve — so sandboxed
+/// applications keep the runtime's own icons. Worth knowing before wondering why
+/// Papirus shows in one window and not another.
 pub const FLATPAK_GTK3_THEME: &str = "org.gtk.Gtk3theme.Adwaita-dark";
+
+/// Renders the arguments that install [`FLATPAK_GTK3_THEME`].
+///
+/// **`flatpak install --system` does work from a chroot**, contrary to what this
+/// module claimed at first. The bus is not the obstacle: the system helper exists
+/// for *unprivileged* clients, and the installer runs as root. What fails, when
+/// it fails, is the `apply_extra` step, which needs a working bubblewrap sandbox
+/// — a different problem with its own answer, and not one to solve by handing out
+/// a setuid binary.
+pub fn flatpak_install_args() -> Vec<String> {
+    vec![
+        "install".to_string(),
+        "--system".to_string(),
+        "--noninteractive".to_string(),
+        // The remote's name comes from the file name of the `.flatpakrepo` the
+        // installer ships in /etc/flatpak/remotes.d — so `flathub` resolves with
+        // no `remote-add` and no network round-trip to set it up.
+        "flathub".to_string(),
+        FLATPAK_GTK3_THEME.to_string(),
+    ]
+}
+
 
 /// Renders the schema override.
 pub fn override_file() -> String {
@@ -312,6 +342,17 @@ mod tests {
         // the order wrong gives a plausible, wrongly-coloured application.
         assert!(QT_COLOR_SCHEME.starts_with("/usr/share/qt6ct/colors/"));
         assert!(QT_COLOR_SCHEME.ends_with(".conf"));
+    }
+
+    #[test]
+    fn the_flatpak_install_names_the_extension_and_the_remote() {
+        let args = flatpak_install_args();
+        assert!(args.contains(&"--system".to_string()));
+        assert!(args.contains(&"flathub".to_string()));
+        assert!(args.contains(&FLATPAK_GTK3_THEME.to_string()));
+        // Not an app: it is the GTK 3 theme runtime extension, so it is named
+        // `org.gtk.Gtk3theme.*` rather than anything recognisable as an app.
+        assert!(FLATPAK_GTK3_THEME.starts_with("org.gtk.Gtk3theme."));
     }
 
     #[test]

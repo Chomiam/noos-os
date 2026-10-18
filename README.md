@@ -187,12 +187,24 @@ variable, parce qu'elle accepte une liste séparée par des deux-points.
 **Les applications Flatpak** : celles en GTK 4 suivent le portail de réglages,
 qui lit l'hôte — elles sont donc sombres sans rien faire. Celles en GTK 3 ne
 voient pas `/usr/share/themes` et ont besoin d'une extension installée dans le
-bac à sable. L'installateur ne peut pas la poser : `flatpak` a besoin du bus
-système, absent du chroot. À faire une fois après la première connexion :
+bac à sable, ce que l'installateur fait.
+
+L'installation depuis un chroot fonctionne : le bus système n'est pas
+l'obstacle, le service d'assistance de flatpak existant pour les clients **non
+privilégiés**. Quand elle échoue, c'est à l'étape `apply_extra`, qui réclame un
+bac à sable bubblewrap fonctionnel — et la réponse du forum est de rendre
+`bwrap` setuid. **Ce n'est pas fait ici** : Arch le livre volontairement sans ce
+bit, et un installateur ne devrait pas retirer une mesure de durcissement pour
+une raison cosmétique. L'échec est donc signalé, avec la commande à lancer plus
+tard, et l'installation continue.
 
 ```bash
 flatpak install flathub org.gtk.Gtk3theme.Adwaita-dark
 ```
+
+Il n'existe **pas** d'équivalent pour le thème d'icônes — l'identifiant
+Flathub `org.freedesktop.Platform.Icontheme.Papirus` ne résout pas — donc les
+applications du bac à sable gardent les icônes de leur runtime.
 
 ## Organisation
 
