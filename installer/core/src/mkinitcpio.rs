@@ -40,9 +40,9 @@ pub fn config(with_resume: bool) -> String {
          #\n\
          # There is deliberately no btrfs-overlayfs or grub-btrfs hook here.\n\
          # Those exist for GRUB's snapshot mechanism, which boots a read-only\n\
-         # snapshot through an overlay. limine does not work that way:\n\
-         # limine-snapper-sync writes real kernel copies to /boot and limine\n\
-         # boots them directly.\n\
+           # snapshot through an overlay. rEFInd does not work that way either:\n\
+           # it boots the kernel sitting on the ESP and only switches the root\n\
+           # subvolume, so there is nothing to overlay.
          \n\
          MODULES=({modules})\n\
          BINARIES=()\n\

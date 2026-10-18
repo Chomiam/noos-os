@@ -87,15 +87,15 @@ pub const ROOT_SUBVOLUME: &str = "@";
 /// `fmask=0133,dmask=0077` is the hardening the Arch wiki recommends once an
 /// ESP is mounted at `/boot`: files stay world-readable, but only root can list
 /// or write the directory, so an unprivileged process cannot drop a replacement
-/// bootloader beside limine. The visible cost is that `ls /boot` is refused for
-/// a normal user; every tool that writes there — mkinitcpio, limine-snapper-sync,
-/// the kernel install hooks — runs as root.
+/// bootloader beside rEFInd. The visible cost is that `ls /boot` is refused for
+/// a normal user; every tool that writes there — mkinitcpio, pacman's kernel
+/// hooks, refind-btrfs — runs as root.
 pub const ESP_MOUNT_OPTIONS: &str = "rw,noatime,fmask=0133,dmask=0077";
 
 /// Renders `/etc/fstab` for the installed system.
 ///
 /// UUIDs are looked up after formatting the partitions, and `subvol=` is used
-/// by name rather than `subvolid=`: snapper and limine-snapper-sync resolve
+/// by name rather than `subvolid=`: snapper and refind-btrfs resolve
 /// subvolumes by name, and mixing the two is a classic source of
 /// "snapshots not found".
 ///

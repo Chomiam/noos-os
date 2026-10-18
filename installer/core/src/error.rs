@@ -22,8 +22,8 @@ pub enum Error {
     #[error("disque inutilisable : {0}")]
     Layout(String),
 
-    #[error("limine : {0}")]
-    Limine(String),
+    #[error("rEFInd : {0}")]
+    Refind(String),
 
     #[error("btrfs : {0}")]
     Btrfs(String),

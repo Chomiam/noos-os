@@ -68,7 +68,7 @@ pub struct InstallConfig {
     pub install_shelly: bool,
     pub firmware: Firmware,
     /// Which kernel to install. Drives the package, the headers, the initramfs
-    /// presets and the paths limine boots from.
+    /// presets and the kernel paths the boot entry names.
     pub kernel: Kernel,
     /// Which legacy NVIDIA branch to build, when the detected card predates
     /// Turing.
@@ -105,10 +105,12 @@ impl std::fmt::Debug for InstallConfig {
 }
 
 impl InstallConfig {
-    /// Name of the limine menu entry for the installed system.
+    /// Name of the boot menu entry for the installed system.
     ///
-    /// `limine-snapper-sync` matches on this to decide where to hang its
-    /// "Snapshots" submenu, so it has to agree with `TARGET_OS_NAME`.
+    /// refind-btrfs derives a stanza per snapshot from the entry carrying this
+    /// name, so it has to be exactly what `refind::refind_conf` writes. A
+    /// decorated name — "noos-os (linux-zen)" — reads better and would leave
+    /// the snapshots without a menu to appear under.
     pub const OS_ENTRY_NAME: &'static str = "noos-os";
 
     /// Everything that can be checked before touching a single byte on disk.

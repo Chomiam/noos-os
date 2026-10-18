@@ -11,7 +11,7 @@ use noos_core::config::InstallConfig;
 use noos_core::events::StdoutSink;
 use noos_core::exec::Runner;
 use noos_core::install::Installer;
-use noos_core::{btrfs, gpu, keyboard, layout, limine, mkinitcpio, snapshots};
+use noos_core::{btrfs, gpu, keyboard, layout, mkinitcpio, refind};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -181,8 +181,16 @@ fn cmd_check(args: &[String]) -> ExitCode {
         btrfs::fstab(btrfs_uuid, esp_uuid, swap_uuid, false)
     );
     println!(
-        "===== /boot/limine.conf =====\n{}",
-        limine::config(btrfs_uuid, swap_uuid, config.kernel)
+        "===== /boot/EFI/refind/refind.conf =====\n{}",
+        refind::refind_conf(config.kernel)
+    );
+    println!(
+        "===== /boot/refind_linux.conf =====\n{}",
+        refind::refind_linux_conf(btrfs_uuid, swap_uuid)
+    );
+    println!(
+        "===== themes/noos/theme.conf =====\n{}",
+        refind::theme_conf()
     );
     println!(
         "===== /etc/mkinitcpio.conf =====\n{}",
@@ -199,14 +207,6 @@ fn cmd_check(args: &[String]) -> ExitCode {
             keyboard::x11_conf(keyboard)
         );
     }
-    println!(
-        "===== /etc/limine-snapper-sync.conf =====\n{}",
-        snapshots::limine_snapper_sync_conf(swap_uuid)
-    );
-    println!(
-        "===== /etc/default/limine =====\n{}",
-        snapshots::default_limine_conf()
-    );
     println!(
         "===== paquets du bureau ({}) =====\n{}",
         config.desktop.packages().len(),

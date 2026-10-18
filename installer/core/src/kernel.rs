@@ -2,8 +2,8 @@
 //!
 //! The kernel is not just another package: its name appears in the package
 //! list, in the matching headers package, in the initramfs presets and in the
-//! paths `limine.conf` boots from. Getting the names out of sync — installing
-//! `linux-zen` but pointing limine at `vmlinuz-linux` — produces a system that
+//! paths the bootloader's entry boots from. Getting the names out of sync — installing
+//! `linux-zen` but pointing the entry at `vmlinuz-linux` gives a system that
 //! installs cleanly and then does not boot, so every derived name is computed
 //! here rather than spelled out at each use site.
 
@@ -72,7 +72,7 @@ impl Kernel {
         }
     }
 
-    /// Name used in the limine menu entry.
+    /// Name shown in the boot menu entry.
     pub fn label(self) -> &'static str {
         match self {
             Kernel::Linux => "linux",
@@ -128,7 +128,7 @@ mod tests {
         // string with a different prefix, and the initramfs adds `.img`.
         //
         // Pinned because the two are written out separately below, and a typo
-        // in one of them produces a limine entry pointing at a file that does
+        // in one of them produces a boot entry pointing at a file that does
         // not exist: the install succeeds and the machine does not boot.
         for kernel in Kernel::all() {
             let expected = format!(

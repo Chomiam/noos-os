@@ -5,11 +5,19 @@
 
 use crate::error::{Error, Result};
 
-/// 8 GiB. `limine-snapper-sync` copies a kernel *and* an initramfs onto the
-/// boot partition for every snapshot it makes bootable, and a single kernel
-/// plus DKMS/NVIDIA modules can exceed 300 MiB. 4 GiB is the documented
-/// minimum; 8 GiB leaves room to grow.
-pub const ESP_SIZE_MIB: u64 = 8 * 1024;
+/// 1 GiB.
+///
+/// This used to be 8 GiB, because `limine-snapper-sync` copied a kernel *and*
+/// an initramfs onto the boot partition for every snapshot it made bootable.
+/// rEFInd works differently: one kernel is shared by every entry, and only the
+/// root subvolume changes between them. So the partition holds the kernel,
+/// its initramfs, the CPU microcode and rEFInd's own files — a few hundred
+/// megabytes, with room for several kernel versions.
+///
+/// The trade this buys: snapshots no longer roll back the kernel. A kernel
+/// upgrade that breaks the boot can no longer be escaped by booting an older
+/// snapshot. See [`crate::snapshots`].
+pub const ESP_SIZE_MIB: u64 = 1024;
 
 /// 8 GiB, as requested. A partition rather than a swapfile on purpose: a
 /// subvolume holding an active swapfile cannot be snapshotted, so a swapfile
@@ -26,8 +34,10 @@ const GPT_TAIL_MIB: u64 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartitionKind {
-    /// FAT32, mounted at `/boot`. Not a choice: limine reads only
-    /// FAT12/16/32 and ISO9660, so an ext4 `/boot` would not boot.
+    /// FAT32, mounted at `/boot`. Not a choice: the firmware reads FAT
+    /// natively and rEFInd inherits that, whereas a `/boot` on btrfs would
+    /// need rEFInd's own driver — which the Arch wiki warns misreads a
+    /// copy-on-write or deduplicated volume.
     Esp,
     /// btrfs, holding every subvolume.
     Btrfs,
@@ -283,10 +293,19 @@ mod tests {
         // contiguous partitions with no overlap.
         let plan = plan(500 * GIB, true).expect("plan valide");
 
-        assert_eq!(plan.esp.sgdisk_range(), "1:1MiB:+8192MiB");
+        // Derived from the constants rather than written out: this assertion
+        // used to spell out 8192, and changing the ESP size turned a passing
+        // test into a failing one it had no business noticing.
+        assert_eq!(
+            plan.esp.sgdisk_range(),
+            format!("1:{FIRST_USABLE_MIB}MiB:+{ESP_SIZE_MIB}MiB")
+        );
         assert_eq!(
             plan.swap.as_ref().expect("swap").sgdisk_range(),
-            "2:8193MiB:+8192MiB"
+            format!(
+                "2:{}MiB:+{SWAP_SIZE_MIB}MiB",
+                FIRST_USABLE_MIB + ESP_SIZE_MIB
+            )
         );
 
         // The `+` is what makes the difference; without it the value is read

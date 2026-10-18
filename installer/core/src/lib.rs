@@ -2,7 +2,7 @@
 //!
 //! Deliberately free of any Tauri dependency: the Tauri app, a CLI and the
 //! test suite all drive the same code. Anything that only *describes* the
-//! install (partition sizes, `fstab`, `limine.conf`, snapper settings) is a
+//! install (partition sizes, `fstab`, `refind.conf`, snapper settings) is a
 //! pure function, so it can be verified without root; only [`exec`] and
 //! [`install`] touch the machine.
 
@@ -20,12 +20,12 @@ pub mod install;
 pub mod kernel;
 pub mod keyboard;
 pub mod layout;
-pub mod limine;
 pub mod locale;
 pub mod mkinitcpio;
 pub mod nvidia_devices;
 pub mod network;
 pub mod powersave;
+pub mod refind;
 pub mod services;
 pub mod snapshots;
 pub mod validate;

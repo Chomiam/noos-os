@@ -2,7 +2,7 @@
 //!
 //! The step order is not arbitrary; each entry below records *why* it has to
 //! happen where it does. Anything that can be expressed as a pure function
-//! (fstab, limine.conf, snapper settings) lives in its own module and is
+//! (fstab, refind.conf, snapper settings) lives in its own module and is
 //! tested there — this file is the part that actually touches the machine.
 
 use std::path::Path;
@@ -19,10 +19,10 @@ use crate::gpu::{self, CodecPlan, Gpu};
 use crate::hardware;
 use crate::layout::{self, PartitionPlan};
 use crate::keyboard;
-use crate::limine;
 use crate::locale;
 use crate::mkinitcpio;
 use crate::powersave;
+use crate::refind;
 use crate::services;
 use crate::snapshots;
 
@@ -92,7 +92,7 @@ pub struct Step {
 ///   can be written before that.
 /// * `pacstrap` populates the target. Every step from `fstab` to `desktop`
 ///   writes into a tree that pacstrap created, or runs a program it installed.
-/// * `fstab`, `locale` and `initramfs` come before `limine`, which references
+/// * `fstab`, `locale` and `initramfs` come before `refind`, which references
 ///   the kernel and initramfs paths they produce.
 /// * `cleanup` is last, and also runs on failure.
 ///
@@ -105,15 +105,15 @@ pub const STEPS: &[Step] = &[
     Step { id: "subvolumes", title: "Création des sous-volumes btrfs", criticality: Criticality::Required },
     Step { id: "pacstrap", title: "Installation des paquets", criticality: Criticality::Required },
     // Right after the base system, and before anything that expects the
-    // snapshot chain: `limine-snapper-sync` owns the configuration file the
-    // `snapshots` step writes, and writing it before the package exists would
+    // snapshot chain: `refind-btrfs` writes its stanzas into a directory under
+    // rEFInd's own configuration, and the `snapshots` step configures snapper,
     // leave pacman refusing to install that package later.
     Step { id: "chaotic", title: "Dépôt Chaotic-AUR", criticality: Criticality::Required },
     Step { id: "fstab", title: "Génération de /etc/fstab", criticality: Criticality::Required },
     Step { id: "locale", title: "Langue, fuseau horaire et nom de machine", criticality: Criticality::Required },
     Step { id: "initramfs", title: "Configuration de l'initramfs", criticality: Criticality::Required },
     Step { id: "users", title: "Création du compte utilisateur", criticality: Criticality::Required },
-    Step { id: "limine", title: "Installation du chargeur limine", criticality: Criticality::Required },
+    Step { id: "refind", title: "Installation du chargeur rEFInd", criticality: Criticality::Required },
     Step { id: "snapshots", title: "Configuration des instantanés btrfs", criticality: Criticality::Required },
     Step { id: "services", title: "Activation des services", criticality: Criticality::Required },
     Step { id: "powersave", title: "Gestion d'énergie des cartes réseau", criticality: Criticality::Required },
@@ -188,7 +188,7 @@ impl<'a> Installer<'a> {
                 "locale" => self.configure_locale(),
                 "initramfs" => self.configure_initramfs(),
                 "users" => self.create_user(),
-                "limine" => self.install_limine(),
+                "refind" => self.install_refind(),
                 "snapshots" => self.configure_snapshots(),
                 "services" => self.configure_services(),
                 "powersave" => self.configure_powersave(),
@@ -286,7 +286,7 @@ impl<'a> Installer<'a> {
     ///
     /// The single most damaging mistake this installer can make. If `/boot`
     /// ends up inside the btrfs root subvolume instead of on the ESP, pacstrap
-    /// writes the kernel where limine cannot read it, and the installation
+    /// writes the kernel where the bootloader cannot read it, and the
     /// reports success on a machine that will not boot.
     fn require_boot_is_esp(&self) -> Result<()> {
         let fs = self
@@ -303,7 +303,7 @@ impl<'a> Installer<'a> {
                 "{MOUNT_ROOT}/boot n'est pas monté : le noyau serait écrit hors de la partition de démarrage"
             ))),
             other => Err(Error::Layout(format!(
-                "{MOUNT_ROOT}/boot est en {other}, pas en FAT32 : limine ne saurait pas le lire"
+                "{MOUNT_ROOT}/boot est en {other}, pas en FAT32 : rEFInd ne saurait pas le lire"
             ))),
         }
     }
@@ -348,7 +348,7 @@ impl<'a> Installer<'a> {
         // selected.
         //
         // The two have to agree, and the failure is not obvious: choosing UEFI
-        // on a BIOS machine writes limine's EFI binary to a FAT partition and
+        // on a BIOS machine once wrote limine's EFI binary to a FAT partition and
         // then calls `efibootmgr`, which fails, and the machine has no boot
         // path at all. Choosing BIOS on a UEFI machine leaves an MBR that
         // firmware in UEFI-only mode will not read.
@@ -726,8 +726,9 @@ impl<'a> Installer<'a> {
         //
         // This is not optional and not implied by anything above. Without it,
         // pacstrap writes the kernel to /boot *of the btrfs root subvolume*,
-        // mkinitcpio writes the initramfs beside it, and limine.conf lands in
-        // the same place — a tree limine cannot read, since it only speaks
+        // mkinitcpio writes the initramfs beside it, and the boot menu's
+        // configuration lands in the same place — a tree the bootloader cannot
+        // read unless it is FAT, since it only speaks
         // FAT12/16/32 and ISO9660. The installation would report success and
         // the machine would not boot.
         let esp = layout::partition_path(&disk, plan.esp.number);
@@ -991,93 +992,131 @@ impl<'a> Installer<'a> {
         Ok(())
     }
 
-    fn install_limine(&mut self) -> Result<()> {
+    /// Installs rEFInd on the target's ESP and configures it.
+    ///
+    /// UEFI only, and it says so out loud. rEFInd has no equivalent of
+    /// `limine bios-install`: there is nothing to write to a disk's MBR, so on
+    /// a BIOS machine there would be no bootloader at all. Failing here names
+    /// the firmware, where a silent success would leave an unbootable disk
+    /// reported as a good installation.
+    fn install_refind(&mut self) -> Result<()> {
         self.require_target()?;
         self.require_boot_is_esp()?;
         self.require_kernel()?;
-        let conf = limine::config(
-            &self.uuids.btrfs,
-            self.uuids.swap.as_deref(),
-            self.config.kernel,
-        );
-        exec::write_file(format!("{MOUNT_ROOT}/boot/limine.conf"), &conf, 0o644)?;
 
-        match self.config.firmware {
-            Firmware::Uefi => {
-                exec::make_dir(format!("{MOUNT_ROOT}/boot/EFI/limine"), 0o755)?;
-                exec::make_dir(format!("{MOUNT_ROOT}/boot/EFI/BOOT"), 0o755)?;
-
-                // The firmware executable, at both paths.
-                //
-                // `/EFI/BOOT/BOOTX64.EFI` is the removable-media fallback the
-                // firmware looks for when no NVRAM entry points anywhere. It
-                // matters more than it looks: it is what makes the machine
-                // bootable when the NVRAM entry could not be written, which
-                // happens on real firmware and never in a VM.
-                let source = format!("{MOUNT_ROOT}/usr/share/limine/BOOTX64.EFI");
-                for target in [
-                    format!("{MOUNT_ROOT}/boot/EFI/limine/limine_x64.efi"),
-                    format!("{MOUNT_ROOT}/boot/EFI/BOOT/BOOTX64.EFI"),
-                ] {
-                    std::fs::copy(&source, &target).map_err(|e| Error::io(&source, e))?;
-                }
-
-                // The NVRAM entry, which is a *convenience*, not the boot path.
-                //
-                // Deliberately not fatal. On real hardware `efibootmgr
-                // --create` fails for reasons that have nothing to do with the
-                // installation: NVRAM full — a well-known problem, and one a
-                // VM never has — the variable store mounted read-only, or
-                // firmware that ignores new entries. Aborting here would leave
-                // a fully written and perfectly bootable system reported as a
-                // failed installation.
-                //
-                // The fallback copy above already guarantees the machine
-                // boots; this only makes it appear by name in the firmware
-                // menu.
-                let part = self.plan()?.esp.number.to_string();
-                match self.runner.stream(
-                    "efibootmgr",
-                    &[
-                        "--create",
-                        "--disk",
-                        self.config.disk.as_str(),
-                        "--part",
-                        part.as_str(),
-                        "--label",
-                        "noos-os",
-                        "--loader",
-                        "\\EFI\\limine\\limine_x64.efi",
-                    ],
-                ) {
-                    Ok(()) => self.note("entrée de démarrage UEFI créée"),
-                    Err(err) => {
-                        self.note(format!(
-                            "entrée NVRAM non créée ({err}) — le système démarrera par le chemin de \
-                             repli /EFI/BOOT/BOOTX64.EFI ; l'entrée pourra être ajoutée après coup \
-                             avec efibootmgr"
-                        ));
-                    }
-                }
-            }
-            Firmware::Bios => {
-                // limine needs its stage-3 binary reachable on a FAT volume,
-                // plus its boot code written to the disk's MBR.
-                exec::make_dir(format!("{MOUNT_ROOT}/boot/limine"), 0o755)?;
-                let source = format!("{MOUNT_ROOT}/usr/share/limine/limine-bios.sys");
-                std::fs::copy(&source, format!("{MOUNT_ROOT}/boot/limine/limine-bios.sys"))
-                    .map_err(|e| Error::io(&source, e))?;
-
-                self.runner
-                    .stream("limine", &["bios-install", self.config.disk.as_str()])?;
-            }
+        if self.config.firmware != Firmware::Uefi {
+            return Err(Error::Config(
+                "rEFInd exige l'UEFI : il n'a pas d'équivalent à `limine bios-install`, \
+                 et il n'y aurait aucun chargeur à écrire dans le MBR"
+                    .into(),
+            ));
         }
 
-        self.note("limine installé");
+        let root = format!("{MOUNT_ROOT}/boot/{}", refind::REFIND_DIR);
+        exec::make_dir(&root, 0o755)?;
+        exec::make_dir(format!("{root}/themes/{}", refind::THEME_NAME), 0o755)?;
+        exec::make_dir(format!("{MOUNT_ROOT}/boot/EFI/BOOT"), 0o755)?;
+        exec::make_dir(format!("{MOUNT_ROOT}{}", refind::SNAPSHOT_DIR), 0o755)?;
+
+        // The firmware executable, at both paths.
+        //
+        // `/EFI/BOOT/BOOTX64.EFI` is the removable-media fallback the firmware
+        // looks for when no NVRAM entry points anywhere. It matters more than it
+        // looks: it is what keeps the machine bootable when the NVRAM entry
+        // could not be written, which happens on real firmware and never in a VM.
+        let source = format!("{MOUNT_ROOT}/usr/share/refind/refind_x64.efi");
+        for target in [
+            format!("{root}/refind_x64.efi"),
+            format!("{MOUNT_ROOT}/boot/EFI/BOOT/BOOTX64.EFI"),
+        ] {
+            std::fs::copy(&source, &target).map_err(|e| Error::io(&source, e))?;
+        }
+
+        // The theme, read from the **live medium** rather than from the target:
+        // it is part of the image, not of any package, so it is not in the
+        // target's filesystem until this copies it there.
+        let icons = self.copy_theme()?;
+
+        exec::write_file(
+            format!("{root}/refind.conf"),
+            &refind::refind_conf(self.config.kernel),
+            0o644,
+        )?;
+        exec::write_file(
+            format!("{root}/themes/{}/theme.conf", refind::THEME_NAME),
+            &refind::theme_conf(),
+            0o644,
+        )?;
+
+        // Written by us, and it has to be. `refind-install` run from a chroot
+        // fills this from the *live* medium's kernel command line, so the
+        // installed system would boot with the live kernel's options — a panic
+        // on first boot that reads as though the installation failed.
+        exec::write_file(
+            format!("{MOUNT_ROOT}/boot/refind_linux.conf"),
+            &refind::refind_linux_conf(&self.uuids.btrfs, self.uuids.swap.as_deref()),
+            0o644,
+        )?;
+
+        // The NVRAM entry, which is a *convenience*, not the boot path.
+        //
+        // Deliberately not fatal. On real hardware `efibootmgr --create` fails
+        // for reasons that have nothing to do with the installation: NVRAM full
+        // — a well-known problem, and one a VM never has — the variable store
+        // mounted read-only, or firmware that ignores new entries. Aborting here
+        // would leave a fully written and perfectly bootable system reported as
+        // a failed installation.
+        let part = self.plan()?.esp.number.to_string();
+        match self.runner.stream(
+            "efibootmgr",
+            &[
+                "--create",
+                "--disk",
+                self.config.disk.as_str(),
+                "--part",
+                part.as_str(),
+                "--label",
+                "noos-os",
+                "--loader",
+                refind::EFI_LOADER_PATH,
+            ],
+        ) {
+            Ok(()) => self.note("entrée de démarrage UEFI créée"),
+            Err(err) => self.note(format!(
+                "entrée NVRAM non créée ({err}) — le système démarrera par le chemin de repli \
+                 /EFI/BOOT/BOOTX64.EFI ; l'entrée pourra être ajoutée après coup avec efibootmgr"
+            )),
+        }
+
+        self.note(format!("rEFInd installé ({icons} images de thème)"));
         Ok(())
     }
 
-    /// Configures snapper and the limine snapshot integration.
+    /// Copies the theme's bitmaps from the live medium onto the ESP.
+    ///
+    /// Returns how many images were copied. The list is explicit rather than a
+    /// directory sweep so that a theme file missing from the image fails here,
+    /// at installation time, instead of showing as a blank menu at boot — where
+    /// nothing names the missing file.
+    fn copy_theme(&self) -> Result<usize> {
+        let destination = format!(
+            "{MOUNT_ROOT}/boot/{}/themes/{}",
+            refind::REFIND_DIR,
+            refind::THEME_NAME
+        );
+        let mut copied = 0;
+
+        for image in refind::THEME_FILES {
+            let source = format!("{}/{}", refind::THEME_SOURCE_DIR, image);
+            let target = format!("{destination}/{image}");
+            std::fs::copy(&source, &target).map_err(|e| Error::io(&source, e))?;
+            copied += 1;
+        }
+
+        Ok(copied)
+    }
+
+    /// Configures snapper, and with it the snapshot chain rEFInd exposes.
     ///
     /// Every snapper call carries `--no-dbus`, and that is not optional.
     ///
@@ -1098,25 +1137,19 @@ impl<'a> Installer<'a> {
     fn configure_snapshots(&mut self) -> Result<()> {
         self.require_target()?;
 
-        // Both paths are absolute and belong to the *target*, so they need the
-        // mount prefix like every other config written here.
+        // No configuration file is written here any more.
         //
-        // Without it they land in the live medium's own `/etc` — an overlayfs
-        // thrown away at reboot — and the installed system keeps none of them.
-        // `limine-snapper-sync` then starts with no TARGET_OS_NAME, does not
-        // recognise the `noos-os` entry, and the snapshot submenu never
-        // appears. Nothing logs a word about it: the file was written, just not
-        // where anything reads it.
-        exec::write_file(
-            format!("{MOUNT_ROOT}{}", snapshots::LIMINE_SNAPPER_SYNC_CONF),
-            &snapshots::limine_snapper_sync_conf(self.uuids.swap.as_deref()),
-            0o644,
-        )?;
-        exec::write_file(
-            format!("{MOUNT_ROOT}{}", snapshots::DEFAULT_LIMINE_CONF),
-            &snapshots::default_limine_conf(),
-            0o644,
-        )?;
+        // limine needed two — one to teach its sync tool which menu entry to
+        // hang the snapshot submenu under, one to teach the kernel hook how to
+        // regenerate entries. rEFInd needs neither: refind-btrfs reads rEFInd's
+        // own configuration off the ESP and derives its stanzas from the
+        // `noos-os` entry it finds there, and its packaged defaults are already
+        // written for snapper. Writing our own copy would mean reimplementing a
+        // file whose keys are the tool's business, and getting one wrong is
+        // silent.
+        //
+        // The snapshot directory on the ESP is created by `install_refind`,
+        // which runs before this step and knows where the ESP is mounted.
 
         // snapper creates /.snapshots itself. Creating it beforehand makes this
         // command fail, which is exactly why the layout never mounts one there.
@@ -1133,7 +1166,7 @@ impl<'a> Installer<'a> {
         )?;
 
         // Prove the configuration was written before the next steps depend on
-        // it: `limine-snapper-sync` refuses to do anything without a snapper
+        // it: `refind-btrfs` has nothing to turn into stanzas without a snapper
         // config named `root`, and it says so only much later.
         let config = format!(
             "{MOUNT_ROOT}/etc/snapper/configs/{}",
@@ -1275,7 +1308,7 @@ impl<'a> Installer<'a> {
         Ok(())
     }
 
-    /// Installs AUR support, the limine snapshot tooling and Shelly.
+    /// Installs AUR support, the snapshot tooling and Shelly.
     ///
     /// The only step that needs the network, and the only one that can fail
     /// without dooming the installation: the system is already complete and
@@ -1590,7 +1623,7 @@ impl<'a> Installer<'a> {
         );
 
         // The snapshot chain only works once /boot is mounted, so these are
-        // enabled here, after limine has written to it.
+        // enabled here, after the bootloader has written to it.
         for unit in snapshots::UNITS {
             let _ = self
                 .runner
@@ -1617,7 +1650,7 @@ impl<'a> Installer<'a> {
 /// Packages installed on every target system, regardless of desktop.
 ///
 /// The kernel is deliberately absent: it is chosen by the user, and its name
-/// also drives the headers package and the paths limine boots from — see
+/// also drives the headers package and the kernel paths the entry names — see
 /// [`crate::kernel::Kernel`] and [`Installer::pacstrap`].
 ///
 /// `base-devel` and `git` are here because the AUR step needs them; `git` is
@@ -1629,7 +1662,7 @@ const BASE_PACKAGES: &[&str] = &[
     "linux-firmware",
     "mkinitcpio",
     "btrfs-progs",
-    "limine",
+    "refind",
     "efibootmgr",
     "dosfstools",
     "e2fsprogs",
@@ -1669,9 +1702,11 @@ const APPLICATION_RUNTIMES: &[&str] = &["flatpak", "fuse3", "jre25-openjdk"];
 /// during installation was tried and abandoned; Chaotic serves them as signed
 /// binaries instead. See [`crate::chaotic`] for what that trade costs.
 const CHAOTIC_PACKAGES: &[&str] = &[
-    // The snapshot chain — the point of the distribution.
-    "limine-mkinitcpio-hook",
-    "limine-snapper-sync",
+    // The snapshot chain — the point of the distribution. A Python program, so
+    // it *could* be built on the target, unlike the GraalVM native images that
+    // limine's tooling needed; it comes from here so that every AUR package
+    // follows one path.
+    "refind-btrfs",
     // The AUR helper. From Chaotic it is a binary like any other; the fallback
     // path still knows how to build `yay-bin` if it is ever missing.
     "yay",
@@ -1715,7 +1750,7 @@ pub fn package_list(config: &InstallConfig, codec: &CodecPlan) -> Vec<String> {
     //
     // It is a repository package, but it used to be left to the AUR step —
     // which meant that step failing, or being skipped, left
-    // `limine-snapper-sync` installed and inert: the watcher never sees a
+    // `refind-btrfs` installed and inert: the watcher never sees a
     // snapshot appear, so the boot menu never gains an entry, and nothing
     // anywhere says why.
     extend_str(&mut packages, snapshots::REQUIRED_EXTRA_PACKAGES);
@@ -1780,7 +1815,7 @@ mod tests {
         // Guards against adding a Step to STEPS and forgetting its arm in run().
         let dispatched = [
             "preflight", "gpu", "partition", "subvolumes", "pacstrap", "chaotic", "fstab",
-            "locale", "initramfs", "users", "limine", "snapshots", "services", "powersave",
+            "locale", "initramfs", "users", "refind", "snapshots", "services", "powersave",
             "aur", "desktop", "cleanup",
         ];
         for step in STEPS {
@@ -1831,7 +1866,7 @@ mod tests {
     fn nothing_is_written_before_the_filesystems_exist() {
         let subvolumes = position("subvolumes");
         for step in [
-            "pacstrap", "fstab", "locale", "initramfs", "users", "limine", "snapshots",
+            "pacstrap", "fstab", "locale", "initramfs", "users", "refind", "snapshots",
             "services", "desktop",
         ] {
             assert!(
@@ -1855,18 +1890,19 @@ mod tests {
     }
 
     #[test]
-    fn limine_comes_after_the_kernel_and_its_initramfs() {
-        // The guards around limine check for both, so the ordering is what
+    fn refind_comes_after_the_kernel_and_its_initramfs() {
+        // The guards around rEFInd check for both, so the ordering is what
         // makes them meaningful rather than vacuous.
         assert!(position("pacstrap") < position("initramfs"));
-        assert!(position("initramfs") < position("limine"));
+        assert!(position("initramfs") < position("refind"));
     }
 
     #[test]
-    fn the_snapshot_config_follows_the_limine_config() {
-        // limine-snapper-sync matches TARGET_OS_NAME against the entry in
-        // limine.conf. The entry has to exist first.
-        assert!(position("limine") < position("snapshots"));
+    fn the_snapshot_chain_follows_the_bootloader() {
+        // refind-btrfs parses rEFInd's configuration off the ESP and derives
+        // its stanzas from the entry it finds there. The entry has to exist
+        // before anything can be derived from it.
+        assert!(position("refind") < position("snapshots"));
     }
 
     #[test]
@@ -1908,7 +1944,7 @@ mod tests {
 
     #[test]
     fn base_packages_cover_the_whole_snapshot_chain() {
-        for package in ["btrfs-progs", "snapper", "snap-pac", "limine", "mkinitcpio"] {
+        for package in ["btrfs-progs", "snapper", "snap-pac", "refind", "mkinitcpio"] {
             assert!(BASE_PACKAGES.contains(&package), "{package} manquant");
         }
     }
@@ -1920,10 +1956,11 @@ mod tests {
     }
 
     #[test]
-    fn limine_comes_from_the_target_not_the_live_medium() {
-        // The live ISO boots with systemd-boot, so limine has to be in the
+    fn refind_comes_from_the_target_not_the_live_medium() {
+        // The live ISO boots through rEFInd, but from its own copy on the
+        // medium, so the bootloader the *target* needs has to be in the
         // target's own package list.
-        assert!(BASE_PACKAGES.contains(&"limine"));
+        assert!(BASE_PACKAGES.contains(&"refind"));
     }
 
     #[test]
@@ -1970,7 +2007,7 @@ mod tests {
             assert!(packages.contains(&kernel.package().to_string()));
 
             // And no other kernel: installing two would put two images in
-            // /boot, only one of which limine is told about.
+            // /boot, only one of which the boot entry names.
             for other in crate::kernel::Kernel::all() {
                 if other != kernel {
                     assert!(
