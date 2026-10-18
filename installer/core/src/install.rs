@@ -7,6 +7,7 @@
 
 use std::path::Path;
 
+use crate::audio;
 use crate::btrfs;
 use crate::chaotic;
 use crate::config::{Firmware, InstallConfig};
@@ -1247,10 +1248,22 @@ impl<'a> Installer<'a> {
             0o644,
         )?;
 
+        // WirePlumber puts an idle audio node to sleep after five seconds and
+        // some hardware does not survive it. Not a desktop choice: every profile
+        // installs PipeWire, so every profile gets the same fragment.
+        let audio_dir = format!("{MOUNT_ROOT}{}", audio::CONF_DIR);
+        exec::make_dir(&audio_dir, 0o755)?;
+        exec::write_file(
+            format!("{audio_dir}/{}", audio::CONF_FILE),
+            &audio::no_suspend_conf(),
+            0o644,
+        )?;
+
         self.note(format!(
             "services activés (Bluetooth, impression, profils d'énergie) pour {}",
             desktop.label()
         ));
+        self.note("mise en veille audio désactivée (WirePlumber)");
 
         Ok(())
     }

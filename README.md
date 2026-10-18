@@ -206,6 +206,29 @@ Il n'existe **pas** d'équivalent pour le thème d'icônes — l'identifiant
 Flathub `org.freedesktop.Platform.Icontheme.Papirus` ne résout pas — donc les
 applications du bac à sable gardent les icônes de leur runtime.
 
+## Son
+
+WirePlumber endort un nœud audio resté inactif, **au bout de cinq secondes par
+défaut**, et sur une bonne partie du matériel il ne se réveille pas proprement :
+le périphérique disparaît du mélangeur, ou le premier son après un silence est
+perdu. Le symptôme rapporté est « le son ne marche plus », quelques secondes
+après la dernière lecture.
+
+L'installateur pose donc un fragment dans
+`/etc/wireplumber/wireplumber.conf.d/` qui met `session.suspend-timeout-seconds`
+à **0** — ce qui désactive le délai. Ce n'est pas une supposition : c'est ce que
+fait le script de WirePlumber lui-même, qui sort immédiatement quand la valeur
+est zéro.
+
+Deux règles, une par moniteur — `monitor.alsa.rules` et `monitor.bluez.rules`.
+Il n'existe pas de section générique `node.rules`, et n'en mettre qu'une
+laisserait les casques Bluetooth s'endormir.
+
+**Le coût est réel** : un périphérique qui ne s'endort jamais continue de
+consommer sa veille. Le fichier dit comment reprendre cette économie, et il est
+au troisième rang de la recherche de configuration — après les fichiers de la
+distribution, avant ceux de l'utilisateur, qui peut donc le surcharger.
+
 ## Organisation
 
 ```

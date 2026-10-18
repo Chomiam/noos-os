@@ -11,7 +11,7 @@ use noos_core::config::InstallConfig;
 use noos_core::events::StdoutSink;
 use noos_core::exec::Runner;
 use noos_core::install::Installer;
-use noos_core::{btrfs, gpu, keyboard, layout, mkinitcpio, refind};
+use noos_core::{audio, btrfs, gpu, keyboard, layout, mkinitcpio, refind};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -179,6 +179,11 @@ fn cmd_check(args: &[String]) -> ExitCode {
     println!(
         "===== /etc/fstab =====\n{}",
         btrfs::fstab(btrfs_uuid, esp_uuid, swap_uuid, false)
+    );
+    println!(
+        "===== /etc/wireplumber/wireplumber.conf.d/{} =====\n{}",
+        audio::CONF_FILE,
+        audio::no_suspend_conf()
     );
     println!(
         "===== /boot/EFI/refind/refind.conf =====\n{}",

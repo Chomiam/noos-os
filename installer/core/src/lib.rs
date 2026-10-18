@@ -6,6 +6,7 @@
 //! pure function, so it can be verified without root; only [`exec`] and
 //! [`install`] touch the machine.
 
+pub mod audio;
 pub mod btrfs;
 pub mod chaotic;
 pub mod config;
