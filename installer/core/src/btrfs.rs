@@ -65,6 +65,10 @@ impl Subvolume {
 /// `@tmp` gets `nodatacow`: it is throwaway data and copy-on-write there only
 /// costs fragmentation. Note that `nodatacow` is never applied to `@` — that
 /// would silently disable both snapshots and compression.
+///
+/// `/.snapshots` is deliberately **not** in this list. `snapper -c root
+/// create-config /` creates it itself, as a nested subvolume inside `@`;
+/// pre-mounting one of ours at that path makes the command fail outright.
 pub const SUBVOLUMES: &[Subvolume] = &[
     Subvolume { name: "@",      mount: "/",          snapshotted: true  },
     Subvolume { name: "@home",  mount: "/home",      snapshotted: false },
@@ -78,11 +82,14 @@ pub const SUBVOLUMES: &[Subvolume] = &[
 /// The one subvolume snapper manages.
 pub const ROOT_SUBVOLUME: &str = "@";
 
-/// `/.snapshots` is deliberately **not** in this list.
+/// Mount options for the ESP at `/boot`.
 ///
-/// `snapper -c root create-config /` creates `/.snapshots` itself, as a nested
-/// subvolume inside `@`. Pre-mounting our own subvolume there makes that
-/// command fail outright.
+/// `fmask=0133,dmask=0077` is the hardening the Arch wiki recommends once an
+/// ESP is mounted at `/boot`: files stay world-readable, but only root can list
+/// or write the directory, so an unprivileged process cannot drop a replacement
+/// bootloader beside limine. The visible cost is that `ls /boot` is refused for
+/// a normal user; every tool that writes there — mkinitcpio, limine-snapper-sync,
+/// the kernel install hooks — runs as root.
 pub const ESP_MOUNT_OPTIONS: &str = "rw,noatime,fmask=0133,dmask=0077";
 
 /// Renders `/etc/fstab` for the installed system.

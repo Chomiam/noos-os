@@ -19,6 +19,7 @@ pub mod kernel;
 pub mod keyboard;
 pub mod layout;
 pub mod limine;
+pub mod locale;
 pub mod mkinitcpio;
 pub mod nvidia_devices;
 pub mod network;

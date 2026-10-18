@@ -18,6 +18,7 @@ use crate::hardware;
 use crate::layout::{self, PartitionPlan};
 use crate::keyboard;
 use crate::limine;
+use crate::locale;
 use crate::mkinitcpio;
 use crate::powersave;
 use crate::services;
@@ -793,25 +794,29 @@ impl<'a> Installer<'a> {
         let locale = self.config.locale;
         let wanted = locale.glibc_name();
 
-        // locale.gen ships fully commented out; uncomment exactly the one we
-        // want and leave every other line untouched.
+        // locale.gen ships fully commented out and its lines carry two fields,
+        // the locale and its charset. See [`locale::enable`] for what comparing
+        // the whole line against `fr_FR.UTF-8` quietly cost: nothing was ever
+        // enabled, locale-gen had nothing to do, and it exited 0.
         let locale_gen = format!("{MOUNT_ROOT}/etc/locale.gen");
         let contents =
             std::fs::read_to_string(&locale_gen).map_err(|e| Error::io(&locale_gen, e))?;
-        let patched: String = contents
-            .lines()
-            .map(|line| {
-                if line.trim_start_matches('#').trim() == wanted {
-                    wanted.to_string()
-                } else {
-                    line.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        exec::write_file(&locale_gen, &patched, 0o644)?;
+        exec::write_file(&locale_gen, &locale::enable(&contents, wanted), 0o644)?;
 
         self.runner.stream_in(Some(MOUNT_ROOT), "locale-gen", &[])?;
+
+        // `locale-gen` succeeds either way — a file with every line still
+        // commented out gives it nothing to complain about. Asking glibc which
+        // locales it now holds is what turns that silent no-op into a failure
+        // here, instead of a target where LANG names a locale that does not
+        // exist and every program falls back to C.
+        let listed = self.runner.capture_in(MOUNT_ROOT, "locale", &["-a"])?;
+        if !locale::available(&listed, wanted) {
+            return Err(Error::Config(format!(
+                "la locale {wanted} n'a pas été générée : /etc/locale.conf la nommerait \
+                 sans qu'elle existe, et tout tomberait en C"
+            )));
+        }
 
         exec::write_file(
             format!("{MOUNT_ROOT}/etc/locale.conf"),
