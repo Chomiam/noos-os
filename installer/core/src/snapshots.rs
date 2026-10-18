@@ -10,6 +10,18 @@ use crate::config::InstallConfig;
 /// Snapper config name. It must manage the subvolume mounted at `/`.
 pub const SNAPPER_CONFIG_NAME: &str = "root";
 
+/// Tells snapper to work without the system bus.
+///
+/// Mandatory for every invocation from the installer. `snapper` reaches
+/// `snapperd` over D-Bus by default, and an `arch-chroot` has no bus — the
+/// call fails with `org.freedesktop.DBus.Error.ServiceUnknown`, which names
+/// the bus error rather than the cause.
+///
+/// The manual warns that a running `snapperd` will not learn about changes
+/// made this way. That is exactly right here: there is no daemon in the chroot
+/// to inform, and the configuration is written for the next boot.
+pub const NO_DBUS: &str = "--no-dbus";
+
 /// Kept equal to `MAX_SNAPSHOT_ENTRIES` below.
 ///
 /// If snapper keeps more snapshots than limine exposes entries for, every sync
@@ -157,6 +169,17 @@ mod tests {
 
         let with = limine_snapper_sync_conf(Some(SWAP));
         assert!(with.contains(&format!("SNAPSHOT_KERNEL_PARAMETERS+=\" resume=UUID={SWAP}\"")));
+    }
+
+    #[test]
+    fn snapper_is_always_called_without_dbus() {
+        // The installer runs snapper inside `arch-chroot`, which has no D-Bus.
+        // Without this flag `snapper -c root create-config /` fails with
+        // `org.freedesktop.DBus.Error.ServiceUnknown` — a message that names
+        // the bus error and nothing about the cause, three steps before
+        // anything else breaks.
+        assert_eq!(NO_DBUS, "--no-dbus");
+        assert!(NO_DBUS.starts_with("--"));
     }
 
     #[test]

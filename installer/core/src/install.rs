@@ -1049,8 +1049,27 @@ impl<'a> Installer<'a> {
         Ok(())
     }
 
+    /// Configures snapper and the limine snapshot integration.
+    ///
+    /// Every snapper call carries `--no-dbus`, and that is not optional.
+    ///
+    /// `snapper` talks to `snapperd` over the system bus by default. The
+    /// `snapper` package ships that daemon, and on a running system it is
+    /// started on demand — but an `arch-chroot` has no D-Bus at all, so the
+    /// call fails with:
+    ///
+    /// ```text
+    /// Failure (org.freedesktop.DBus.Error.ServiceUnknown).
+    /// ```
+    ///
+    /// which names the bus error and nothing about the cause. `--no-dbus` is
+    /// the documented way to operate without a bus; the manual warns that a
+    /// running snapperd will not know about changes made this way, which is
+    /// exactly right here — there is no daemon to inform, and the configuration
+    /// is written for the *next* boot, not for the running system.
     fn configure_snapshots(&mut self) -> Result<()> {
         self.require_target()?;
+
         exec::write_file(
             snapshots::LIMINE_SNAPPER_SYNC_CONF,
             &snapshots::limine_snapper_sync_conf(self.uuids.swap.as_deref()),
@@ -1067,8 +1086,27 @@ impl<'a> Installer<'a> {
         self.runner.stream_in(
             Some(MOUNT_ROOT),
             "snapper",
-            &["-c", snapshots::SNAPPER_CONFIG_NAME, "create-config", "/"],
+            &[
+                snapshots::NO_DBUS,
+                "-c",
+                snapshots::SNAPPER_CONFIG_NAME,
+                "create-config",
+                "/",
+            ],
         )?;
+
+        // Prove the configuration was written before the next steps depend on
+        // it: `limine-snapper-sync` refuses to do anything without a snapper
+        // config named `root`, and it says so only much later.
+        let config = format!(
+            "{MOUNT_ROOT}/etc/snapper/configs/{}",
+            snapshots::SNAPPER_CONFIG_NAME
+        );
+        if !Path::new(&config).exists() {
+            return Err(Error::Config(format!(
+                "{config} est absent : create-config n'a pas abouti"
+            )));
+        }
 
         for (key, value) in snapshots::snapper_settings() {
             let setting = format!("{key}={value}");
@@ -1076,6 +1114,7 @@ impl<'a> Installer<'a> {
                 Some(MOUNT_ROOT),
                 "snapper",
                 &[
+                    snapshots::NO_DBUS,
                     "-c",
                     snapshots::SNAPPER_CONFIG_NAME,
                     "set-config",
