@@ -113,9 +113,14 @@ fi
 # A failure is a warning and not an error: an ISO without them still installs a
 # complete system, falling back to building from the AUR at install time. It is
 # slower and needs the network, but it is not broken.
+#
+# Called directly, not through `as_builder`: the script installs build
+# dependencies and then drops to a normal user for makepkg itself. Going through
+# `as_builder` would leave it unprivileged, and its own sudo — from inside
+# `sudo -u`, with no terminal — fails outright instead of prompting.
 step "Paquets AUR préconstruits"
 readonly AUR_STAGE="${ROOT}/.build/aur-packages"
-if as_builder "'${ROOT}/scripts/build-aur-packages.sh' '${AUR_STAGE}'"; then
+if "${ROOT}/scripts/build-aur-packages.sh" "$AUR_STAGE"; then
   echo "  $(ls -1 "${AUR_STAGE}"/*.pkg.tar.zst 2>/dev/null | wc -l) paquets prêts"
 else
   echo "  avertissement : construction impossible — l'installation les compilera depuis l'AUR"
