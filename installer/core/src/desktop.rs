@@ -186,6 +186,12 @@ static GNOME: DesktopProfile = DesktopProfile {
         // too, but 111 MiB is a lot to spend on a preference nobody expressed
         // for them.
         "papirus-icon-theme",
+        // `Adwaita-dark`, which GTK 3 and every Electron application look for —
+        // GTK 4 uses `color-scheme` and needs none of it.
+        "gnome-themes-extra",
+        // Qt's own theming, for Qt 5 and 6: VLC is the Qt 5 case here.
+        "qt5ct",
+        "qt6ct",
         "gdm",
         "xdg-desktop-portal-gnome",
     ],

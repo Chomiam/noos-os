@@ -1540,21 +1540,22 @@ impl<'a> Installer<'a> {
         Ok(())
     }
 
-    /// Applies the desktop's icon theme and colour scheme, for every user.
+    /// Applies the desktop's dark appearance, for every user and every toolkit.
     ///
-    /// Three steps, and the middle one is the one that gets forgotten:
+    /// Four levers, none of which reads another:
     ///
-    /// 1. Write the override into the target's schemas directory. The path needs
-    ///    `MOUNT_ROOT` like every other config written here, or it lands on the
-    ///    live medium's overlayfs and is thrown away at reboot.
-    /// 2. **Compile the schemas.** `gsettings` reads `gschemas.compiled`, never
-    ///    the override file: writing it without running `glib-compile-schemas`
-    ///    changes nothing at all, and nothing says so. The command runs in the
-    ///    chroot so it is the target's own glib, not the live medium's.
-    /// 3. Read the value back. The whole point of a schema override is that the
-    ///    key answers with it before any user exists, and that is exactly what
-    ///    `gsettings get` proves.
-    fn configure_icon_theme(&self) -> Result<()> {
+    /// 1. The **schema override**, plus the `glib-compile-schemas` that gives it
+    ///    any effect at all. The path needs `MOUNT_ROOT` like every other config
+    ///    written here, or it lands on the live medium's overlayfs and is thrown
+    ///    away at reboot.
+    /// 2. **GTK's own settings files**, which cover applications that never talk
+    ///    to the settings daemon — Electron among them.
+    /// 3. **Qt's configuration and environment**, for Qt 5 *and* Qt 6: VLC is
+    ///    built against Qt 5 here, so it is the media player at stake.
+    /// 4. Nothing for **Flatpak GTK 4** applications, which follow the settings
+    ///    portal and are therefore already dark. GTK 3 sandboxed applications
+    ///    are not, and cannot be fixed from here — see the note at the end.
+    fn configure_theme(&self) -> Result<()> {
         let schemas = format!("{MOUNT_ROOT}{}", theme::SCHEMAS_DIR);
         exec::write_file(
             format!("{schemas}/{}", theme::OVERRIDE_FILE),
@@ -1562,15 +1563,58 @@ impl<'a> Installer<'a> {
             0o644,
         )?;
 
-        self.runner
-            .stream_in(Some(MOUNT_ROOT), "glib-compile-schemas", &[theme::SCHEMAS_DIR])?;
+        // The command runs in the chroot so it is the target's own glib, not the
+        // live medium's — and without `--strict`, which a stock Arch schemas
+        // directory fails for reasons that have nothing to do with this.
+        self.runner.stream_in(
+            Some(MOUNT_ROOT),
+            "glib-compile-schemas",
+            &[theme::SCHEMAS_DIR],
+        )?;
 
-        // `GSETTINGS_BACKEND=memory` is not decoration: without it `gsettings`
-        // answers from the *dconf* database when it can reach one, so the value
-        // read back would be whatever the running user had chosen rather than
-        // the default this just installed. The memory backend reads the schema
-        // defaults and nothing else, which is exactly what the override sets —
-        // and it is also the only backend available in a chroot.
+        for dir in theme::GTK_SETTINGS_DIRS {
+            exec::make_dir(format!("{MOUNT_ROOT}{dir}"), 0o755)?;
+            exec::write_file(
+                format!("{MOUNT_ROOT}{dir}/settings.ini"),
+                &theme::gtk_settings_ini(),
+                0o644,
+            )?;
+        }
+
+        for (dir, file) in theme::QT_CONF_FILES {
+            exec::make_dir(format!("{MOUNT_ROOT}{dir}"), 0o755)?;
+            exec::write_file(
+                format!("{MOUNT_ROOT}{dir}/{file}"),
+                &theme::qt_conf(),
+                0o644,
+            )?;
+        }
+
+        exec::make_dir(format!("{MOUNT_ROOT}{}", theme::QT_ENVIRONMENT_DIR), 0o755)?;
+        exec::write_file(
+            format!("{MOUNT_ROOT}{}", theme::QT_ENVIRONMENT_FILE),
+            &theme::qt_environment(),
+            0o644,
+        )?;
+
+        self.verify_theme()?;
+
+        self.note(format!(
+            "thème sombre appliqué (GTK, Qt 5 et 6, Electron) — thème d'icônes {}",
+            theme::ICON_THEME
+        ));
+        Ok(())
+    }
+
+    /// Reads the applied theme back out of the target's own gsettings.
+    ///
+    /// `GSETTINGS_BACKEND=memory` is not decoration: without it `gsettings`
+    /// answers from the *dconf* database when it can reach one, so the value
+    /// read back would be whatever the running user had chosen rather than the
+    /// default this just installed. The memory backend reads the schema defaults
+    /// and nothing else, which is exactly what the override sets — and it is
+    /// also the only backend available in a chroot.
+    fn verify_theme(&self) -> Result<()> {
         match self.runner.capture_in(
             MOUNT_ROOT,
             "env",
@@ -1582,22 +1626,19 @@ impl<'a> Installer<'a> {
                 "icon-theme",
             ],
         ) {
-            Ok(value) if value.contains(theme::ICON_THEME) => {
-                self.note(format!("thème d'icônes {} appliqué", theme::ICON_THEME))
-            }
-            Ok(value) => {
-                return Err(Error::Config(format!(
-                    "le thème d'icônes vaut {} au lieu de {} : l'override n'a pas été compilé",
-                    value.trim(),
-                    theme::ICON_THEME
-                )))
-            }
+            Ok(value) if value.contains(theme::ICON_THEME) => Ok(()),
+            Ok(value) => Err(Error::Config(format!(
+                "le thème d'icônes vaut {} au lieu de {} : l'override n'a pas été compilé",
+                value.trim(),
+                theme::ICON_THEME
+            ))),
             // The value could be wrong or the check could be impossible; only
             // one of the two is a failure. Saying which keeps the message honest.
-            Err(err) => self.note(format!("thème d'icônes écrit, non vérifié ({err})")),
+            Err(err) => {
+                self.note(format!("thème écrit, non vérifié ({err})"));
+                Ok(())
+            }
         }
-
-        Ok(())
     }
 
     /// Takes the desktop profile's unwanted packages back out of the target.
@@ -1655,7 +1696,7 @@ impl<'a> Installer<'a> {
         self.trim_desktop(desktop)?;
 
         if desktop == desktop::Desktop::Gnome {
-            self.configure_icon_theme()?;
+            self.configure_theme()?;
         }
 
         // Exactly one display manager may own display-manager.service.

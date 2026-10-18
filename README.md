@@ -170,6 +170,30 @@ bus système — celui-là même dont l'absence faisait échouer `snapper`. Un
 valeur par défaut surchargée. Sans bus, sans utilisateur, et valable pour tout
 compte créé plus tard — ce qu'un réglage par utilisateur ne ferait pas.
 
+Quatre familles d'applications dessinent leurs propres widgets, et **aucune ne
+lit le réglage d'une autre** :
+
+| Boîte à outils | Levier |
+|---|---|
+| GTK 4 / libadwaita | `color-scheme='prefer-dark'` dans l'override |
+| GTK 3 | `gtk-theme='Adwaita-dark'` **et** `/etc/gtk-3.0/settings.ini` |
+| Qt 5 et 6 | `qt5ct` + `qt6ct`, leur configuration et `QT_QPA_PLATFORMTHEME=qt5ct:qt6ct` |
+| Electron | aucun : il interroge GTK, donc il suit les deux premiers |
+
+Qt 5 compte vraiment ici : **VLC est bâti contre Qt 5** sur Arch, c'est le
+lecteur de la distribution. Les deux versions sont couvertes par une seule
+variable, parce qu'elle accepte une liste séparée par des deux-points.
+
+**Les applications Flatpak** : celles en GTK 4 suivent le portail de réglages,
+qui lit l'hôte — elles sont donc sombres sans rien faire. Celles en GTK 3 ne
+voient pas `/usr/share/themes` et ont besoin d'une extension installée dans le
+bac à sable. L'installateur ne peut pas la poser : `flatpak` a besoin du bus
+système, absent du chroot. À faire une fois après la première connexion :
+
+```bash
+flatpak install flathub org.gtk.Gtk3theme.Adwaita-dark
+```
+
 ## Organisation
 
 ```
