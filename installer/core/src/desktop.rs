@@ -155,17 +155,27 @@ impl Desktop {
 static GNOME: DesktopProfile = DesktopProfile {
     packages: &[
         "gnome",
-        // The two tools that make a stock GNOME usable: the settings
-        // `gnome-control-center` does not expose, and a way to install
-        // extensions at all.
+        // The two tools a stock GNOME is missing: the settings
+        // `gnome-control-center` does not expose, and a fuller extension
+        // manager than the one GNOME ships inside `gnome-shell`.
         //
         // `extension-manager` and **not** `gnome-shell-extensions`: the latter
         // is a *collection of extensions* — classic mode, the applications
         // menu, and a dozen others — installed whether or not anybody wants
         // them. The name is one word away from the tool and the two are
-        // routinely confused. `gnome-extensions-app` is the official but
-        // minimal alternative; `extension-manager` browses and installs from
-        // extensions.gnome.org on its own, which is why it is the one here.
+        // routinely confused.
+        //
+        // It is the same application Flathub publishes as
+        // `com.mattjakeman.ExtensionManager`, at the same version — the
+        // repository package is preferred here only because it is native: the
+        // Flatpak would drag in the whole GNOME Platform runtime, close to a
+        // gigabyte, for one small tool. Flathub is enabled anyway, so anyone
+        // who wants the sandboxed one can still have it.
+        //
+        // GNOME also ships a manager of its own inside `gnome-shell` (the
+        // Extensions app), which is why a stock GNOME can install extensions
+        // without any of this. `gnome-extensions-app` is a separate, minimal
+        // package for systems where that is not the case.
         "gnome-tweaks",
         "extension-manager",
         "gdm",
