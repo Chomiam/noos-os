@@ -13,6 +13,7 @@ use crate::desktop;
 use crate::error::{Error, Result};
 use crate::events::{EventSink, FinishInfo, InstallEvent, ProgressInfo, StepInfo};
 use crate::exec::{self, Runner};
+use crate::flatpak;
 use crate::gpu::{self, CodecPlan, Gpu};
 use crate::hardware;
 use crate::layout::{self, PartitionPlan};
@@ -1193,6 +1194,18 @@ impl<'a> Installer<'a> {
                 .stream_in(Some(MOUNT_ROOT), "systemctl", &["enable", unit])?;
         }
 
+        // Flathub, as a file rather than a `flatpak remote-add` call: the
+        // command would need the system bus inside the chroot, which is what
+        // made `snapper` fail three steps away from anything naming it. flatpak
+        // reads every `*.flatpakrepo` under this directory at startup.
+        let remotes_dir = format!("{MOUNT_ROOT}{}", flatpak::REMOTES_DIR);
+        exec::make_dir(&remotes_dir, 0o755)?;
+        exec::write_file(
+            format!("{remotes_dir}/{}", flatpak::FLATHUB_FILE),
+            flatpak::FLATHUB_CONF,
+            0o644,
+        )?;
+
         self.note(format!(
             "services activés (Bluetooth, impression, profils d'énergie) pour {}",
             desktop.label()
@@ -1200,7 +1213,6 @@ impl<'a> Installer<'a> {
 
         Ok(())
     }
-
     /// Writes the network power-management configuration.
     ///
     /// Three mechanisms, because no single one covers both kinds of interface
@@ -1506,6 +1518,22 @@ const BASE_PACKAGES: &[&str] = &[
     "tzdata",
 ];
 
+/// Software sources, and the runtime each one needs to work at all.
+///
+/// Three different ways a user gets an application no repository package
+/// provides, and none of them is useful without its support package:
+///
+/// - **Flatpak** is how Flathub arrives — the remote itself is shipped rather
+///   than fetched, so it exists before the machine has ever been online. See
+///   [`crate::flatpak`].
+/// - **`fuse3`** is what Flatpak mounts its runtimes with, and also what an
+///   AppImage needs to mount itself. `flatpak` depends on it, but an AppImage
+///   works on a system with no Flatpak at all, so it is named on its own.
+/// - **Java 25**: the LTS. `jre-openjdk` is **27**, the newest release rather
+///   than the LTS, so the versioned package has to be spelled out — and it is
+///   what provides `java-runtime=25` for anything that asks for a JRE.
+const APPLICATION_RUNTIMES: &[&str] = &["flatpak", "fuse3", "jre25-openjdk"];
+
 /// The complete package list for a target system.
 ///
 /// Extracted from `pacstrap` so it can be tested. This list decides whether
@@ -1536,6 +1564,9 @@ pub fn package_list(config: &InstallConfig, codec: &CodecPlan) -> Vec<String> {
     // script that turns Energy Efficient Ethernet off calls it by absolute
     // path — without the package it would fail silently on every interface.
     extend_str(&mut packages, powersave::REQUIRED_PACKAGES);
+
+    // Flatpak, AppImage and Java.
+    extend_str(&mut packages, APPLICATION_RUNTIMES);
 
     // CPU microcode.
     //

@@ -12,6 +12,7 @@ pub mod desktop;
 pub mod error;
 pub mod events;
 pub mod exec;
+pub mod flatpak;
 pub mod gpu;
 pub mod hardware;
 pub mod install;
