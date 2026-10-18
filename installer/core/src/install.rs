@@ -1018,7 +1018,6 @@ impl<'a> Installer<'a> {
         exec::make_dir(&root, 0o755)?;
         exec::make_dir(format!("{root}/themes/{}", refind::THEME_NAME), 0o755)?;
         exec::make_dir(format!("{MOUNT_ROOT}/boot/EFI/BOOT"), 0o755)?;
-        exec::make_dir(format!("{MOUNT_ROOT}{}", refind::SNAPSHOT_DIR), 0o755)?;
 
         // The firmware executable, at both paths.
         //
@@ -1034,6 +1033,12 @@ impl<'a> Installer<'a> {
             std::fs::copy(&source, &target).map_err(|e| Error::io(&source, e))?;
         }
 
+        // No directory is created for the snapshot stanzas, and this is
+        // deliberate: `refind-btrfs` writes them beside `refind.conf` and adds
+        // its own `include` lines, both named in its own configuration. An
+        // installer-created directory would sit there empty — which is what
+        // happened when this file invented `/EFI/refind/noos-snapshots`.
+        //
         // The theme, read from the **live medium** rather than from the target:
         // it is part of the image, not of any package, so it is not in the
         // target's filesystem until this copies it there.

@@ -27,13 +27,6 @@ pub const EFI_LOADER_PATH: &str = "\\EFI\\refind\\refind_x64.efi";
 /// with a plain path and no `volume` token.
 pub const ESP_PATH: &str = "/boot";
 
-/// Where `refind-btrfs` writes the snapshot stanzas.
-///
-/// Named here so the installer can create it and the tests can pin the path:
-/// `refind-btrfs` reads it from its own configuration, and the two have to
-/// agree.
-pub const SNAPSHOT_DIR: &str = "/EFI/refind/noos-snapshots";
-
 /// Theme directory name, under rEFInd's `themes/`.
 pub const THEME_NAME: &str = "noos";
 
