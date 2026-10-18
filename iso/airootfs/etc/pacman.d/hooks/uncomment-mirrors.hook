@@ -1,0 +1,22 @@
+#
+# pacman-mirrorlist ships every mirror commented out. The live medium needs a
+# working mirrorlist because the installer's pacstrap uses it to fetch the
+# target's packages.
+#
+# This is a hook rather than a shipped /etc/pacman.d/mirrorlist on purpose:
+# that file belongs to pacman-mirrorlist, and airootfs is copied into place
+# *before* pacstrap runs, so shipping our own copy would make pacman refuse to
+# install the package that owns it.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = pacman-mirrorlist
+
+[Action]
+Description = Uncommenting HTTPS mirrors in /etc/pacman.d/mirrorlist...
+When = PostTransaction
+Depends = pacman-mirrorlist
+Depends = sed
+Exec = /usr/bin/sed -E -i 's/#(Server = https:)/\1/g' /etc/pacman.d/mirrorlist

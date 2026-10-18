@@ -1,0 +1,26 @@
+# Initialises the live pacman keyring.
+#
+# Not part of any package: this unit comes from the archiso profile, and the
+# live medium has no other way to get a keyring. Without it, pacstrap has
+# nothing to copy into the target and pacman cannot verify a single package —
+# it fails with "Public keyring not found", then "keyring is not writable".
+#
+# The keyring lives on a tmpfs (see etc-pacman.d-gnupg.mount): a live medium
+# has no writable root to keep it in, and it must not be baked into the
+# squashfs.
+
+[Unit]
+Description=Initializes Pacman keyring
+Requires=etc-pacman.d-gnupg.mount
+After=etc-pacman.d-gnupg.mount time-sync.target
+BindsTo=etc-pacman.d-gnupg.mount
+Before=archlinux-keyring-wkd-sync.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/pacman-key --init
+ExecStart=/usr/bin/pacman-key --populate
+
+[Install]
+WantedBy=multi-user.target

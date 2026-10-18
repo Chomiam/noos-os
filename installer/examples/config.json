@@ -1,0 +1,21 @@
+{
+  "locale": "fr",
+  "timezone": "Europe/Paris",
+  "keyboard": "fr",
+  "hostname": "noos",
+  "fullName": "Jean Dupont",
+  "username": "jean",
+  "password": "correct horse battery staple 47!",
+  "desktop": "plasma",
+  "disk": "/dev/nvme0n1",
+  "swap": true,
+  "requireStrongPassword": true,
+  "enableAur": true,
+  "installShelly": true,
+  "firmware": "uefi",
+  "kernel": "linux",
+  "enableBluetooth": true,
+  "enablePrinting": true,
+  "enablePowerProfiles": true,
+  "nvidiaLegacy": null
+}

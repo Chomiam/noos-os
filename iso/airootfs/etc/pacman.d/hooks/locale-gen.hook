@@ -1,0 +1,21 @@
+#
+# The live environment runs with LANG=en_US.UTF-8, and glibc does not generate
+# any locale on its own. Without this the installer runs under the C locale,
+# which mangles non-ASCII text in the UI and in pacman output.
+#
+# Same reason as the mirrorlist hook: /etc/locale.gen belongs to glibc, so it
+# is edited in place rather than shipped in airootfs.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = glibc
+
+[Action]
+Description = Generating the en_US.UTF-8 locale for the live medium...
+When = PostTransaction
+Depends = glibc
+Depends = sed
+Exec = /usr/bin/sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+Exec = /usr/bin/locale-gen

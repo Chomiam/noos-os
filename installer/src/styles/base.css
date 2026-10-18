@@ -1,0 +1,118 @@
+/*
+ * Reset and global styles.
+ *
+ * The installer runs fullscreen under cage with no window decorations, so
+ * there is no browser chrome, no scrollbar to style around, and no chance of
+ * the user resizing anything. It is closer to a kiosk display than a web page.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* Kiosk rules. Nothing here is a preference — on a live medium the user has
+   * a keyboard and a mouse and nothing else, and a stray text selection or a
+   * right-click menu looks broken. */
+  user-select: none;
+  cursor: default;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Text the user is meant to copy — the install log above all. */
+.selectable {
+  user-select: text;
+  cursor: text;
+}
+
+h1,
+h2,
+h3,
+h4,
+p {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* Visible focus only for keyboard users, but never removed outright: the
+ * installer has to be usable with the keyboard alone. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+::selection {
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
+/* Scrollbars, where a pane can scroll. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid var(--bg);
+  border-radius: var(--r-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+/* Respect the system preference. On a live ISO nobody has set it, but the
+ * same app runs on the installed system afterwards. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

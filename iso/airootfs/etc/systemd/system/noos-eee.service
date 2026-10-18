@@ -1,0 +1,25 @@
+# Kept in sync with installer/core/src/powersave.rs.
+#
+# Applies the Energy Efficient Ethernet setting at boot.
+#
+# The udev rule in /etc/udev/rules.d covers interfaces that appear later; this
+# covers the ones already present, and runs after the network has been brought
+# up so the link exists when ethtool is called.
+#
+# On the live medium this matters more than on an installed system: pacstrap
+# downloads a gigabyte of packages, and a link that sleeps mid-transfer aborts
+# the installation.
+
+[Unit]
+Description=Disable Energy Efficient Ethernet on wired interfaces
+Documentation=man:ethtool(8)
+After=network.target systemd-networkd.service
+Wants=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/noos-eee-off
+
+[Install]
+WantedBy=multi-user.target

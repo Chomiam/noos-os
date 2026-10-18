@@ -1,0 +1,40 @@
+#!/bin/bash
+#
+# Kept in sync with installer/core/src/powersave.rs, which writes the same
+# script to the installed system. The live medium needs it too: a link that
+# drops into a low-power state during pacstrap aborts the installation.
+#
+# Turns off Energy Efficient Ethernet on wired interfaces.
+#
+# EEE lets a link drop into a low-power state between packets. When it is
+# mis-negotiated with the switch — which is common, and rarely the machine's
+# fault — the symptom is a link that flaps or stalls, sometimes only under
+# load.
+
+set -u
+
+# With an argument, handle just that interface; without, sweep them all.
+if [ $# -gt 0 ]; then
+    interfaces=("$@")
+else
+    interfaces=()
+    for path in /sys/class/net/*; do
+        [ -e "$path" ] || continue
+        interfaces+=("${path##*/}")
+    done
+fi
+
+for name in "${interfaces[@]}"; do
+    # Loopback has no link to negotiate.
+    [ "$name" = lo ] && continue
+
+    # Wireless interfaces negotiate their own power management; EEE is an
+    # Ethernet concept and ethtool would just fail here.
+    [ -d "/sys/class/net/$name/wireless" ] && continue
+
+    # Not every driver implements EEE. A failure here is expected and not
+    # worth reporting: the interface simply does not offer it.
+    /usr/bin/ethtool --set-eee "$name" eee off >/dev/null 2>&1 || true
+done
+
+exit 0

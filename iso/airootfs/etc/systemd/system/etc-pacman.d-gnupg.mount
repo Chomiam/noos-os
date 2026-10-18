@@ -1,0 +1,18 @@
+# The live keyring lives on a tmpfs.
+#
+# Kept from the releng profile, and not optional: without it the keyring would
+# be written into the squashfs, and `pacstrap` would find an empty one.
+#
+# This is what `pacman-init.service` requires and binds to, so its absence
+# takes that unit down with it — which is how the live medium ended up with no
+# keyring at all, and how `pacstrap` came to fail with "keyring is not
+# writable" and "required key missing".
+
+[Unit]
+Description=Temporary /etc/pacman.d/gnupg directory
+
+[Mount]
+What=tmpfs
+Where=/etc/pacman.d/gnupg
+Type=tmpfs
+Options=mode=0755,noswap

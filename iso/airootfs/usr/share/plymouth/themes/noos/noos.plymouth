@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=noos-os
+Description=Écran de démarrage noos-os
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/noos
+ScriptFile=/usr/share/plymouth/themes/noos/noos.script

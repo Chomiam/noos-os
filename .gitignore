@@ -1,0 +1,17 @@
+# Rust
+target/
+
+# Node
+node_modules/
+dist/
+
+# archiso build output
+out/
+work/
+.build/
+
+# Verification scratch (a full squashfs extraction, kept off the tmpfs)
+.verify/
+
+# Build artifact copied into the profile by scripts/build-iso.sh
+iso/airootfs/usr/bin/noos-installer

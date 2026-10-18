@@ -1,0 +1,110 @@
+/*
+ * Design tokens.
+ *
+ * The palette is Google's dark-theme Material set, which is what gives the
+ * "sober and premium" register the brief asks for: near-black neutrals with a
+ * desaturated blue accent, rather than the saturated blues of a default theme.
+ *
+ * Everything visual goes through these variables. No component should contain
+ * a literal colour, radius or duration.
+ */
+
+:root {
+  /* ---- Surfaces ---------------------------------------------------------
+   * A four-step ramp. Depth is expressed by these plus a hairline border,
+   * never by drop shadows: shadows read as cheap at this scale, and on a live
+   * ISO they cost compositing for nothing.
+   */
+  --bg: #0a0b0d;
+  --surface: #121417;
+  --surface-2: #191c20;
+  --surface-3: #202429;
+  --border: #23272c;
+  --border-strong: #2e3338;
+
+  /* ---- Text -------------------------------------------------------------- */
+  --text: #e8eaed;
+  --text-muted: #9aa0a6;
+  --text-dim: #5f6368;
+
+  /* ---- Accent ------------------------------------------------------------
+   * Google's dark-theme blue. Deliberately restrained: it appears on the
+   * primary action, the focused field and the active step, and nowhere else.
+   */
+  --accent: #8ab4f8;
+  --accent-strong: #aecbfa;
+  --accent-dim: rgba(138, 180, 248, 0.12);
+  --accent-glow: rgba(138, 180, 248, 0.28);
+
+  /* ---- Semantic ---------------------------------------------------------- */
+  --danger: #f28b82;
+  --danger-dim: rgba(242, 139, 130, 0.12);
+  --success: #81c995;
+  --success-dim: rgba(129, 201, 149, 0.12);
+  --warning: #fdd663;
+  --warning-dim: rgba(253, 214, 99, 0.12);
+
+  /* ---- Password strength ramp --------------------------------------------
+   * Five stops matching zxcvbn's 0-4 score.
+   */
+  --strength-0: #f28b82;
+  --strength-1: #fcad70;
+  --strength-2: #fdd663;
+  --strength-3: #a8d97f;
+  --strength-4: #81c995;
+
+  /* ---- Type -------------------------------------------------------------- */
+  /* Inter if the host has it, Noto Sans otherwise — Noto Sans ships on the
+   * ISO, so the fallback is the one that will actually be used there. */
+  --font: "Inter", "Noto Sans", "DejaVu Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 16px;
+  --text-lg: 20px;
+  --text-xl: 26px;
+  --text-2xl: 34px;
+  --text-3xl: 44px;
+
+  --leading-tight: 1.2;
+  --leading-base: 1.5;
+  --leading-loose: 1.7;
+
+  /* Large type needs negative tracking to stop looking loose. */
+  --track-tight: -0.02em;
+  --track-normal: 0;
+
+  /* ---- Space ------------------------------------------------------------- */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+
+  /* ---- Radius ------------------------------------------------------------ */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 24px;
+  --r-full: 999px;
+
+  /* ---- Motion ------------------------------------------------------------
+   * Material 3's emphasized curve: fast out of the gate, long settle. Every
+   * transition in the app uses this and nothing else, which is most of what
+   * makes a UI feel deliberate rather than twitchy.
+   */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --t-fast: 120ms;
+  --t-base: 200ms;
+  --t-slow: 320ms;
+
+  /* ---- Layout ------------------------------------------------------------ */
+  --content-max: 720px;
+  --rail-w: 240px;
+}

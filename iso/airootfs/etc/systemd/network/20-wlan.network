@@ -1,0 +1,18 @@
+[Match]
+Type=wlan
+
+[Link]
+RequiredForOnline=routable
+
+[Network]
+DHCP=yes
+MulticastDNS=yes
+# Wireless links drop carrier during roaming; without this the interface is
+# torn down and re-configured on every hiccup.
+IgnoreCarrierLoss=3s
+
+[DHCPv4]
+RouteMetric=600
+
+[IPv6AcceptRA]
+RouteMetric=600

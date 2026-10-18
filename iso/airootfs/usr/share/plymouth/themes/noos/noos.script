@@ -1,0 +1,68 @@
+# noos-os boot splash.
+#
+# Plymouth's own script language, not Lua — `fun` declares a function, and
+# callbacks are registered with the Plymouth object.
+
+# Near-black with the faintest vertical grade. A perfectly flat fill reads as
+# a dead screen on some panels; the grade costs nothing and avoids that.
+Window.SetBackgroundTopColor(0.043, 0.047, 0.055);
+Window.SetBackgroundBottomColor(0.020, 0.020, 0.024);
+
+screen_width = Window.GetWidth();
+screen_height = Window.GetHeight();
+
+# --- animated wordmark ----------------------------------------------------
+# The beam that travels along the infinity is baked into 24 frames: Plymouth
+# has no CSS engine, so the SVG's own animation cannot run here. The frames
+# were generated from noos-svg.svg by scripts/generate-plymouth-frames.js.
+
+frame_count = 24;
+frames = [];
+
+for (i = 0; i < frame_count; i++) {
+    name = "frame-" + (i < 10 ? "0" + i : i) + ".png";
+    frames[i] = Image(name);
+}
+
+logo = Sprite();
+logo.SetX(screen_width / 2 - frames[0].GetWidth() / 2);
+logo.SetY(screen_height / 2 - frames[0].GetHeight() / 2 - 24);
+
+# --- progress bar ---------------------------------------------------------
+# Two pixels tall, and driven by the real boot progress. A splash that
+# animates for its own sake while the disk is idle is a lie; this one only
+# moves when the boot does.
+
+bar_width = 280;
+bar_height = 2;
+bar_x = screen_width / 2 - bar_width / 2;
+bar_y = screen_height / 2 + 76;
+
+Rectangle(bar_x, bar_y, bar_width, bar_height, 0.14, 0.15, 0.17, 1.0);
+bar_fill = Rectangle(bar_x, bar_y, 0, bar_height, 0.541, 0.706, 0.973, 1.0);
+
+boot_progress = 0;
+frame_index = 0;
+ticks = 0;
+
+# The SVG runs one cycle in 3.6s. Plymouth's refresh callback fires roughly 50
+# times a second, so a frame advances every 3600 / 24 = 150ms.
+ticks_per_frame = 8;
+
+fun on_refresh() {
+    ticks++;
+    if (ticks >= ticks_per_frame) {
+        ticks = 0;
+        frame_index = (frame_index + 1) % frame_count;
+        logo.SetImage(frames[frame_index]);
+    }
+
+    bar_fill.SetWidth(bar_width * boot_progress);
+}
+
+fun on_boot_progress(duration, progress) {
+    boot_progress = progress;
+}
+
+Plymouth.SetRefreshFunction(on_refresh);
+Plymouth.SetBootProgressFunction(on_boot_progress);

@@ -1,0 +1,115 @@
+name: build-iso
+
+# Builds the live ISO and attaches it to a release.
+#
+# The ISO is around 1.5 GiB. GitHub caps a release asset at 2 GiB, so this
+# works — but not by much. The workflow checks the size before uploading and
+# fails loudly rather than silently producing a release without its ISO, which
+# would happen if the image ever grows past the limit.
+#
+# Runs in an Arch container rather than on the Ubuntu runner: the build needs
+# `mkarchiso`, `pacman` and the Arch package set, and reproducing that on
+# Ubuntu would mean building archiso itself.
+
+on:
+  push:
+    branches: [master, main]
+    tags: ["v*"]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    container:
+      image: archlinux:latest
+      # mkarchiso creates loop devices, mounts filesystems and chroots into
+      # the target. Without this the kernel refuses those operations.
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the build toolchain
+        run: |
+          pacman -Sy --noconfirm
+          # `archiso` pulls most of what mkarchiso needs; `rust` and `bun` come
+          # from the official repositories, so there is no AUR step here.
+          pacman -S --noconfirm --needed \
+            archiso base-devel git rust bun \
+            libxkbcommon xorgproto
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            installer/target
+          key: cargo-${{ hashFiles('installer/Cargo.lock') }}
+          restore-keys: cargo-
+
+      - name: Cache bun
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ hashFiles('installer/bun.lock') }}
+          restore-keys: bun-
+
+      - name: Build the ISO
+        # No sudo: the container runs as root, and the script detects CI and
+        # compiles as root rather than looking for a user to drop to.
+        run: ./scripts/build-iso.sh
+
+      - name: Check the size against GitHub's limit
+        id: size
+        run: |
+          iso="$(ls out/*.iso | head -1)"
+          bytes="$(stat -c%s "$iso")"
+          mib=$((bytes / 1024 / 1024))
+          echo "iso=$iso" >> "$GITHUB_OUTPUT"
+          echo "mib=$mib" >> "$GITHUB_OUTPUT"
+          echo "ISO : $iso (${mib} Mio)"
+
+          # 2 GiB is the hard cap on a release asset.
+          if (( bytes >= 2 * 1024 * 1024 * 1024 )); then
+            echo "::error::l'ISO fait ${mib} Mio, au-dessus de la limite de 2 Gio de GitHub"
+            exit 1
+          fi
+
+      - name: Upload the ISO as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: noos-os-iso
+          path: |
+            ${{ steps.size.outputs.iso }}
+            ${{ steps.size.outputs.iso }}.sha256
+          # Kept short: an artifact this size is for inspecting a run, and the
+          # release below is the durable copy.
+          retention-days: 7
+
+      - name: Attach the ISO to a release
+        # Only on a tag, and only when the size check passed — a release
+        # without its ISO is worse than no release.
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.size.outputs.iso }}
+            ${{ steps.size.outputs.iso }}.sha256
+          body: |
+            noos-os live ISO, built from ${{ github.sha }}.
+
+            Around ${{ steps.size.outputs.mib }} MiB. Verify before use:
+
+            ```
+            sha256sum -c noos-os-*.iso.sha256
+            ```
+
+            Write it to a USB stick with `dd` or `cat`, then boot it in UEFI
+            mode. The installer starts automatically.

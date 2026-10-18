@@ -1,0 +1,113 @@
+# Packages for the noos-os live medium.
+#
+# This is the installer's own environment, not the system it installs. It has
+# to carry everything the installer shells out to, plus the runtime the Tauri
+# app links against.
+
+## Base live system ----------------------------------------------------------
+
+base
+linux
+linux-firmware
+mkinitcpio
+# Mandatory: provides the `archiso` mkinitcpio hook that finds and mounts the
+# squashfs. Without it the medium does not boot.
+mkinitcpio-archiso
+amd-ucode
+intel-ucode
+systemd
+systemd-resolvconf
+dbus
+sudo
+pacman
+# Explicit because two pacman hooks depend on it and must not run before it
+# exists.
+sed
+
+## Storage -------------------------------------------------------------------
+# Everything the installer drives: sgdisk and partprobe to partition, mkfs.*
+# to format, pacstrap to install, and the tools it needs on the target.
+
+btrfs-progs
+dosfstools
+e2fsprogs
+gptfdisk
+parted
+util-linux
+arch-install-scripts
+mtools
+squashfs-tools
+libisoburn
+
+## Hardware discovery --------------------------------------------------------
+# pciutils is not optional: the GPU detection parses `lspci -nn`.
+
+pciutils
+usbutils
+dmidecode
+nvme-cli
+hdparm
+
+## Bootloader tooling for the target -----------------------------------------
+# `limine bios-install` runs from the live environment, not from the chroot,
+# so the binary has to be here as well as on the target.
+
+limine
+efibootmgr
+
+## Networking ----------------------------------------------------------------
+# systemd-networkd (part of systemd) handles the live medium; wpa_supplicant
+# and iwd cover wireless installs.
+#
+# `iwd` is what the installer drives for Wi-Fi: it takes exclusive control of
+# the wireless device, so `iw scan` would fail while it runs — iwctl is the
+# only way in. `iw` is kept for diagnostics from a rescue shell, and declared
+# explicitly rather than relied on as a transitive dependency.
+
+wpa_supplicant
+wireless-regdb
+iwd
+iw
+# Turns Energy Efficient Ethernet off. The script that does it calls ethtool
+# by absolute path, so a missing package would fail silently on every
+# interface — and a link that sleeps during pacstrap aborts the installation.
+ethtool
+
+## Graphical stack for the installer -----------------------------------------
+# cage is the kiosk compositor that hosts the single fullscreen app.
+# webkit2gtk-4.1, gtk3, libsoup3 and librsvg are what the compiled Tauri binary
+# actually links against — note base-devel and xdotool are build-time only and
+# deliberately absent.
+# mesa gives hardware acceleration where a driver exists and llvmpipe where it
+# does not, which is what keeps the installer usable in a VM.
+
+cage
+webkit2gtk-4.1
+gtk3
+libsoup3
+librsvg
+adwaita-icon-theme
+mesa
+noto-fonts
+ttf-dejavu
+
+## Boot splash ---------------------------------------------------------------
+# Runs from the initramfs, so it also needs the `plymouth` mkinitcpio hook
+# (see etc/mkinitcpio.conf.d/archiso.conf) and `splash` on the kernel command
+# line. The theme lives in airootfs and is selected by /etc/plymouth.
+
+plymouth
+
+## Console -------------------------------------------------------------------
+
+vim
+nano
+less
+man-db
+which
+tmux
+
+## Testing -------------------------------------------------------------------
+# Lets the host ask the VM for its address during install testing.
+
+qemu-guest-agent

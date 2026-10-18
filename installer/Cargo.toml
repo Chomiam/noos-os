@@ -1,0 +1,12 @@
+[workspace]
+members = ["core", "src-tauri"]
+resolver = "3"
+
+# Tauri's recommended release profile. Profiles must live at the workspace root,
+# otherwise member manifests silently ignore them.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

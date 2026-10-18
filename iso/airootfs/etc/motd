@@ -1,0 +1,21 @@
+
+   noos-os — média live d'installation
+   ───────────────────────────────────
+
+   L'installateur graphique démarre automatiquement sur tty1.
+
+   Si l'interface ne s'affiche pas, ou pour toute intervention manuelle,
+   bascule sur un autre terminal avec Ctrl+Alt+F2 (ou F3, F4…).
+   Chaque autre terminal ouvre un shell root normal.
+
+   Utile en cas de problème :
+
+     journalctl -b              journal du démarrage
+     lsblk -f                   disques et systèmes de fichiers
+     lspci -nn | grep -E 'VGA|3D'   matériel graphique détecté
+     noos-install gpu           pile de pilotes et codecs retenue
+     noos-install check <conf>  valider une configuration sans rien écrire
+
+   Le mot de passe de root est verrouillé : la session de tty1 est déjà root,
+   il n'y a rien à déverrouiller.
+
