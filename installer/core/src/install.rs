@@ -1511,9 +1511,20 @@ impl<'a> Installer<'a> {
     /// way through, which would otherwise leave `noosbuilder` on the disk with
     /// a live `NOPASSWD: ALL` rule.
     fn remove_builder(&self) {
-        let _ = self
-            .runner
-            .stream_in(Some(MOUNT_ROOT), "userdel", &["-r", BUILDER_USER]);
+        // Checked first, because the ordinary case is that the account is
+        // already gone — the AUR step removes it, and this runs again at
+        // cleanup. `userdel` on a missing account prints "user 'noosbuilder'
+        // does not exist" in the installer's journal, where it reads as a
+        // failure of a step that in fact succeeded.
+        let passwd = std::fs::read_to_string(format!("{MOUNT_ROOT}/etc/passwd")).unwrap_or_default();
+        if passwd
+            .lines()
+            .any(|line| line.starts_with(&format!("{BUILDER_USER}:")))
+        {
+            let _ = self
+                .runner
+                .stream_in(Some(MOUNT_ROOT), "userdel", &["-r", BUILDER_USER]);
+        }
         let _ = std::fs::remove_file(format!("{MOUNT_ROOT}/etc/sudoers.d/20-noos-builder"));
     }
 
