@@ -118,24 +118,31 @@ pub fn refind_linux_conf(btrfs_uuid: &str, swap_uuid: Option<&str>) -> String {
 /// **`scanfor` replaces the list, it does not extend it.** Naming a subset —
 /// `internal,external,manual` was the first thing written here — silently
 /// removes every boot method not named, and rEFInd says nothing about it: the
-/// tags simply are not there. The documented default on a UEFI PC is
-/// `internal,external,optical,netboot,cd`, with `hdbios`, `biosexternal` and
-/// `firmware` off; the whole set is spelled out so that omitting one is a
-/// deliberate act rather than an oversight.
+/// tags simply are not there. So the UEFI set is spelled out in full, leaving
+/// out only what is deliberately absent.
 ///
-/// `manual` is the one addition over the default, and it is mandatory: without
-/// it rEFInd ignores every `menuentry` in this file, our own included.
+/// `manual` is the addition, and it is mandatory: without it rEFInd ignores
+/// every `menuentry` in this file, our own included.
 ///
-/// `firmware` stays off, matching the default. Turning it on would list the
-/// firmware's own boot options — Windows' entry and ours among them — as
-/// duplicates of the loaders found on the ESP.
+/// Four tokens stay out:
+///
+/// - `hdbios`, `biosexternal` and **`cd`** are the *legacy* group. `cd` is the
+///   one that fools you — it reads as "optical", which `optical` already
+///   covers. Asking for it on a machine with no CSM stops the boot on a wall of
+///   text and waits for a keypress before showing the menu, which is exactly
+///   what happened on the first real boot of this medium. Seen, not deduced.
+/// - `firmware` would list the firmware's own boot options — Windows' entry and
+///   ours among them — as duplicates of the loaders found on the ESP.
+///
+/// The rEFInd manual calls the legacy tokens "enabled by default" — on **Macs**.
+/// On a UEFI PC they are off, which is the sentence that decides it.
 ///
 /// **This is what finds Windows on a dual-boot machine.** Its loader sits at
 /// `EFI/Microsoft/Boot/bootmgfw.efi` on an ESP, which the `internal` scan
 /// covers; rEFInd recognises it by its conventional path and gives it the
 /// Windows icon. No driver and no stanza are needed: the file is on FAT, which
 /// the firmware reads natively.
-pub const SCANFOR: &str = "internal,external,optical,netboot,cd,manual";
+pub const SCANFOR: &str = "internal,external,optical,netboot,manual";
 
 /// Renders `/boot/EFI/refind/refind.conf`.
 ///
@@ -271,13 +278,20 @@ mod tests {
         // tags are simply absent. `internal,external,manual` was written here
         // first and dropped optical, netboot and cd.
         let methods: Vec<&str> = SCANFOR.split(',').map(str::trim).collect();
-        for required in ["internal", "external", "optical", "netboot", "cd", "manual"] {
+        for required in ["internal", "external", "optical", "netboot", "manual"] {
             assert!(methods.contains(&required), "{required} manque à scanfor");
         }
-        // Off by default on a UEFI PC, and turning it on would duplicate every
-        // firmware boot option.
+        // The whole legacy group, `cd` included. It reads as "optical", which
+        // `optical` already covers, and asking for it stops the boot on a CSM
+        // warning that waits for a keypress.
+        for legacy in ["hdbios", "biosexternal", "cd"] {
+            assert!(
+                !methods.contains(&legacy),
+                "{legacy} est une option BIOS : rEFInd s'arrêterait sur un avertissement CSM"
+            );
+        }
+        // Turning this on would duplicate every firmware boot option.
         assert!(!methods.contains(&"firmware"));
-        assert!(!methods.contains(&"hdbios"));
     }
 
     #[test]
