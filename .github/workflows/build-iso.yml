@@ -38,10 +38,22 @@ jobs:
       - name: Install the build toolchain
         run: |
           pacman -Sy --noconfirm
-          # `archiso` pulls most of what mkarchiso needs; `rust` and `bun` come
-          # from the official repositories, so there is no AUR step here.
+          # `archiso` pulls most of what mkarchiso needs.
+          #
+          # `rust` and `bun` are in the official repositories, so there is no
+          # AUR step here.
+          #
+          # The rest are for compiling the Tauri app: `pkgconf` and the GTK
+          # stack it probes with `pkg-config`. Without them the build stops at
+          # "Package gdk-3.0 was not found in the pkg-config search path" —
+          # which names the library but not the package to install.
+          #
+          # `libxkbcommon` and `xorgproto` are for the code generators: the
+          # keyboard tables come from `xkbcli` and `keysymdef.h`.
           pacman -S --noconfirm --needed \
-            archiso base-devel git rust bun \
+            archiso base-devel git \
+            rust bun \
+            pkgconf gtk3 webkit2gtk-4.1 libsoup3 librsvg \
             libxkbcommon xorgproto
 
       - name: Cache cargo

@@ -891,17 +891,32 @@ impl<'a> Installer<'a> {
         self.require_target()?;
         let username = self.config.username.clone();
 
+        // `-U` creates a group with the same name as the user.
+        //
+        // Arch's convention, and not the default: without it the account has no
+        // group of its own and everything it creates lands in `users`. Desktops
+        // and systemd user sessions expect a private group — `systemd --user`
+        // takes it, `logind` derives the session from it, and a home directory
+        // owned by `user:users` behaves oddly with some permission checks.
+        //
+        // The full name goes to `-c`, the GECOS field. Commas are stripped:
+        // GECOS is comma-separated (name, room, work phone, home phone), so a
+        // full name containing one would silently turn the rest into fields
+        // nobody asked for.
+        let gecos = self.config.full_name.replace(',', " ");
+
         self.runner.stream_in(
             Some(MOUNT_ROOT),
             "useradd",
             &[
                 "-m",
+                "-U",
                 "-G",
                 "wheel",
                 "-s",
                 "/bin/bash",
                 "-c",
-                self.config.full_name.as_str(),
+                gecos.trim(),
                 username.as_str(),
             ],
         )?;
@@ -914,13 +929,37 @@ impl<'a> Installer<'a> {
         self.runner
             .stream_with_stdin(Some(MOUNT_ROOT), "chpasswd", &[], &credentials)?;
 
+        // Prove the account exists before the steps that assume it does.
+        //
+        // `create_user` is the first step whose failure takes every step after
+        // it down, and the tools involved report their own problems in their own
+        // words. Reading the target's own passwd file is the direct check, and it
+        // says exactly what is wrong if the account is not there.
+        let passwd = std::fs::read_to_string(format!("{MOUNT_ROOT}/etc/passwd"))
+            .map_err(|e| Error::io(format!("{MOUNT_ROOT}/etc/passwd"), e))?;
+        if !passwd.lines().any(|line| line.starts_with(&format!("{username}:"))) {
+            return Err(Error::Config(format!(
+                "le compte {username} est absent de /etc/passwd après useradd"
+            )));
+        }
+
+        // Also check the group `-U` was supposed to create: a silent failure
+        // there would leave a home directory owned by the wrong group.
+        let group = std::fs::read_to_string(format!("{MOUNT_ROOT}/etc/group"))
+            .unwrap_or_default();
+        if !group.lines().any(|line| line.starts_with(&format!("{username}:"))) {
+            return Err(Error::Config(format!(
+                "le groupe {username} n'a pas été créé : /home/{username} appartiendrait au mauvais groupe"
+            )));
+        }
+
         exec::write_file(
             format!("{MOUNT_ROOT}/etc/sudoers.d/10-noos-wheel"),
             "%wheel ALL=(ALL:ALL) ALL\n",
             0o440,
         )?;
 
-        self.note(format!("compte {username} créé"));
+        self.note(format!("compte {username} créé (groupe {username}, membre de wheel)"));
         Ok(())
     }
 
