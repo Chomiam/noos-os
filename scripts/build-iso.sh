@@ -126,31 +126,34 @@ readonly CHAOTIC_KEY="3056513887B78AEB"
 
 # `pacman-key --list-keys` on the local keyring, not on the fetched one: what
 # matters is whether the *host* has already accepted the key.
-# The keyring has to exist before anything can be signed with it.
-#
-# `--lsign-key` needs a **local secret key**, which `pacman-key --init` creates
-# and which a fresh container does not have. On a machine where pacman has been
-# used the keyring is already initialised and the omission is invisible — which
-# is why this only ever failed in CI, where it failed on every single run:
-#
-#   ERROR: There is no secret key available to sign with.
-#
-# `/etc/pacman.d/gnupg` is what `--init` creates, so its absence is the test.
-if [[ ! -d /etc/pacman.d/gnupg ]]; then
-  echo "  initialisation du trousseau pacman (absent)"
-  pacman-key --init
-fi
-
+# Chaotic's key is fetched by its full identifier — the official bootstrap, and
+# the only step that trusts anything on the strength of an identifier rather
+# than a signature. Everything after it is verified against the key.
 if pacman-key --list-keys "$CHAOTIC_KEY" >/dev/null 2>&1; then
   echo "  clé $CHAOTIC_KEY déjà présente"
 else
   echo "  import de la clé $CHAOTIC_KEY"
   pacman-key --recv-key "$CHAOTIC_KEY" --keyserver keyserver.ubuntu.com
-  # `--lsign-key` is the trust decision: it marks the key as locally signed, so
-  # packages from Chaotic verify without a prompt nobody can answer during a
-  # build.
+fi
+
+# Locally signing needs a **secret** key, which `pacman-key --init` creates.
+#
+# Doing it the obvious way — test whether the keyring exists, initialise if not
+# — does not work: an Arch container ships `/etc/pacman.d/gnupg` with public
+# keys already imported and no secret key, so the directory is present and the
+# signing still fails. Every CI run stopped here:
+#
+#   ERROR: There is no secret key available to sign with.
+#
+# So the attempt comes first and the initialisation only on failure, which is
+# what the error message itself advises. A second failure aborts under `set -e`
+# rather than being swallowed.
+if ! pacman-key --lsign-key "$CHAOTIC_KEY" 2>/dev/null; then
+  echo "  trousseau sans clé secrète : pacman-key --init"
+  pacman-key --init
   pacman-key --lsign-key "$CHAOTIC_KEY"
 fi
+echo "  clé $CHAOTIC_KEY signée localement"
 
 if pacman -Qq chaotic-mirrorlist >/dev/null 2>&1; then
   echo "  chaotic-mirrorlist déjà installé"
