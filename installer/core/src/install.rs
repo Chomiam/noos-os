@@ -25,6 +25,7 @@ use crate::powersave;
 use crate::refind;
 use crate::services;
 use crate::snapshots;
+use crate::theme;
 
 /// Where the target system is assembled.
 pub const MOUNT_ROOT: &str = "/mnt";
@@ -1539,6 +1540,66 @@ impl<'a> Installer<'a> {
         Ok(())
     }
 
+    /// Applies the desktop's icon theme and colour scheme, for every user.
+    ///
+    /// Three steps, and the middle one is the one that gets forgotten:
+    ///
+    /// 1. Write the override into the target's schemas directory. The path needs
+    ///    `MOUNT_ROOT` like every other config written here, or it lands on the
+    ///    live medium's overlayfs and is thrown away at reboot.
+    /// 2. **Compile the schemas.** `gsettings` reads `gschemas.compiled`, never
+    ///    the override file: writing it without running `glib-compile-schemas`
+    ///    changes nothing at all, and nothing says so. The command runs in the
+    ///    chroot so it is the target's own glib, not the live medium's.
+    /// 3. Read the value back. The whole point of a schema override is that the
+    ///    key answers with it before any user exists, and that is exactly what
+    ///    `gsettings get` proves.
+    fn configure_icon_theme(&self) -> Result<()> {
+        let schemas = format!("{MOUNT_ROOT}{}", theme::SCHEMAS_DIR);
+        exec::write_file(
+            format!("{schemas}/{}", theme::OVERRIDE_FILE),
+            &theme::override_file(),
+            0o644,
+        )?;
+
+        self.runner
+            .stream_in(Some(MOUNT_ROOT), "glib-compile-schemas", &[theme::SCHEMAS_DIR])?;
+
+        // `GSETTINGS_BACKEND=memory` is not decoration: without it `gsettings`
+        // answers from the *dconf* database when it can reach one, so the value
+        // read back would be whatever the running user had chosen rather than
+        // the default this just installed. The memory backend reads the schema
+        // defaults and nothing else, which is exactly what the override sets —
+        // and it is also the only backend available in a chroot.
+        match self.runner.capture_in(
+            MOUNT_ROOT,
+            "env",
+            &[
+                "GSETTINGS_BACKEND=memory",
+                "gsettings",
+                "get",
+                "org.gnome.desktop.interface",
+                "icon-theme",
+            ],
+        ) {
+            Ok(value) if value.contains(theme::ICON_THEME) => {
+                self.note(format!("thème d'icônes {} appliqué", theme::ICON_THEME))
+            }
+            Ok(value) => {
+                return Err(Error::Config(format!(
+                    "le thème d'icônes vaut {} au lieu de {} : l'override n'a pas été compilé",
+                    value.trim(),
+                    theme::ICON_THEME
+                )))
+            }
+            // The value could be wrong or the check could be impossible; only
+            // one of the two is a failure. Saying which keeps the message honest.
+            Err(err) => self.note(format!("thème d'icônes écrit, non vérifié ({err})")),
+        }
+
+        Ok(())
+    }
+
     /// Takes the desktop profile's unwanted packages back out of the target.
     ///
     /// `pacstrap gnome` installs all 58 members of the group and pacman offers
@@ -1592,6 +1653,10 @@ impl<'a> Installer<'a> {
         let manager = desktop.display_manager();
 
         self.trim_desktop(desktop)?;
+
+        if desktop == desktop::Desktop::Gnome {
+            self.configure_icon_theme()?;
+        }
 
         // Exactly one display manager may own display-manager.service.
         for unit in manager.others() {

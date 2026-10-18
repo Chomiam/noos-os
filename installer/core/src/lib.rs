@@ -28,6 +28,7 @@ pub mod powersave;
 pub mod refind;
 pub mod services;
 pub mod snapshots;
+pub mod theme;
 pub mod validate;
 
 pub use config::{Firmware, InstallConfig, Locale};

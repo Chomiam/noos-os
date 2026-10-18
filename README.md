@@ -156,6 +156,20 @@ l'utilisateur. C'est le prix ; l'alternative était d'embarquer une chaîne de
 compilation dans un installateur et de demander à la machine de compiler du Java
 AOT. Voir `installer/core/src/chaotic.rs`.
 
+## Apparence
+
+Sur GNOME, le thème d'icônes **Papirus-Dark** est appliqué avec le schéma de
+couleurs sombre, cohérent avec l'installateur, l'écran Plymouth et le thème
+rEFInd.
+
+Il ne l'est pas par un réglage utilisateur : au moment de l'installation
+personne ne s'est jamais connecté, et `dconf` comme `gsettings set` veulent le
+bus système — celui-là même dont l'absence faisait échouer `snapper`. Un
+**override de schéma** à la place : `glib-compile-schemas` l'intègre à
+`gschemas.compiled`, et une clé que personne n'a jamais écrite se lit comme la
+valeur par défaut surchargée. Sans bus, sans utilisateur, et valable pour tout
+compte créé plus tard — ce qu'un réglage par utilisateur ne ferait pas.
+
 ## Organisation
 
 ```

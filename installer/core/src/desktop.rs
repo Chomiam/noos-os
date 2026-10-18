@@ -178,6 +178,14 @@ static GNOME: DesktopProfile = DesktopProfile {
         // package for systems where that is not the case.
         "gnome-tweaks",
         "extension-manager",
+        // The icon theme, 111 MiB of it. Applied by a schema override rather
+        // than a per-user setting, so it holds from the first login and for
+        // every account created later — see [`crate::theme`].
+        //
+        // Deliberately not in COMMON_PACKAGES: the other desktops would use it
+        // too, but 111 MiB is a lot to spend on a preference nobody expressed
+        // for them.
+        "papirus-icon-theme",
         "gdm",
         "xdg-desktop-portal-gnome",
     ],
