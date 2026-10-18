@@ -181,7 +181,11 @@ fi
 # Removing the previous ISO makes the check below mean something: without it,
 # a build that produced nothing would still find the old file and report it as
 # the result.
-rm -f "$OUT_DIR"/*.iso
+#
+# The checksum goes too. Left behind, it would sit beside a *different* image —
+# a failed build writes no new one — and `sha256sum -c` would then fail on an
+# ISO that is in fact fine, or worse, pass on one that is not.
+rm -f "$OUT_DIR"/*.iso "$OUT_DIR"/*.iso.sha256
 
 mkarchiso -v -w "$WORK_DIR" -o "$OUT_DIR" "$ASSEMBLED"
 
@@ -242,7 +246,13 @@ install -m 0644 "${PROFILE}/airootfs/usr/share/noos/refind-theme/"*.png \
 # it. `archisolabel` is equally good and known in advance — the archiso hook
 # falls back to `/dev/disk/by-label/${archisolabel}`, which is why it is the one
 # passed. See ISO_LABEL below.
-ISO_LABEL="$( ( source "${PROFILE}/profiledef.sh" && printf '%s' "$iso_label" ) )"
+# `declare -A` first, and it is not decoration: `file_permissions` in a profile
+# is an *associative* array, written the way the releng profile writes it —
+# `["/root"]="0:0:750"` — and relies on its consumer having declared it.
+# mkarchiso does exactly this before sourcing. Reading the profile without it
+# makes bash treat `["/root"]` as an arithmetic expression in an indexed array
+# and abort with "/root : erreur de syntaxe arithmétique".
+ISO_LABEL="$( ( declare -A file_permissions; source "${PROFILE}/profiledef.sh"; printf '%s' "$iso_label" ) )"
 [[ -n $ISO_LABEL ]] || die "iso_label introuvable dans profiledef.sh"
 
 cat > "${ISO_TREE}/EFI/refind/refind.conf" <<EOF
@@ -277,7 +287,7 @@ done
 rm -f "$WORK_DIR"/efiboot.img
 
 echo "  seconde passe mkarchiso (squashfs en cache)"
-rm -f "$OUT_DIR"/*.iso
+rm -f "$OUT_DIR"/*.iso "$OUT_DIR"/*.iso.sha256
 mkarchiso -v -w "$WORK_DIR" -o "$OUT_DIR" "$ASSEMBLED"
 
 # The image was really rebuilt, not reused.
