@@ -299,6 +299,19 @@ pub const COMMON_PACKAGES: &[&str] = &[
     "gst-plugins-bad",
     "gst-plugins-ugly",
     "gst-libav",
+    // The player the desktop's own media applications were dropped in favour
+    // of — see `removals` in [`crate::desktop`], which takes all three of
+    // GNOME's out.
+    //
+    // `vlc-plugins-all` is a single meta-package covering every plugin Arch
+    // splits out: ffmpeg, x264, x265, dav1d, aom, matroska, bluray, dvd,
+    // chromecast, pulse, jack, srt, upnp and the rest. Naming them one by one
+    // would need editing on each VLC release.
+    //
+    // VLC 3 has no Wayland output and runs through XWayland. It works — the
+    // package depends on `libx11` — but it is not a native Wayland client.
+    "vlc",
+    "vlc-plugins-all",
 ];
 
 /// AMD needs no separate VA-API or VDPAU package any more.

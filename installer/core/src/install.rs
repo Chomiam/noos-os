@@ -1367,10 +1367,59 @@ impl<'a> Installer<'a> {
         Ok(())
     }
 
+    /// Takes the desktop profile's unwanted packages back out of the target.
+    ///
+    /// `pacstrap gnome` installs all 58 members of the group and pacman offers
+    /// no way to ask for a subset, so the profile names what it does not want
+    /// and it is removed here — about 178 MiB of applications, three media
+    /// players among them.
+    ///
+    /// Two details that matter:
+    ///
+    /// - Only packages that are actually installed are passed to `-R`. A name
+    ///   pacman cannot find is not a warning but a hard error, so an upstream
+    ///   rename would abort the installation here rather than leave one extra
+    ///   application behind.
+    /// - `-s` comes with it deliberately: it removes the dependencies that
+    ///   *nothing else* needs — `packagekit` behind `gnome-software`, `grilo`
+    ///   behind `gnome-music` — while pacman still refuses to touch a library a
+    ///   surviving package depends on.
+    fn trim_desktop(&self, desktop: desktop::Desktop) -> Result<()> {
+        let wanted = desktop.removals();
+        if wanted.is_empty() {
+            return Ok(());
+        }
+
+        let installed = self.runner.capture_in(MOUNT_ROOT, "pacman", &["-Qq"])?;
+        let present: Vec<&str> = wanted
+            .iter()
+            .copied()
+            .filter(|name| installed.lines().any(|line| line == *name))
+            .collect();
+
+        if present.is_empty() {
+            self.note(format!("{} : rien à retirer", desktop.label()));
+            return Ok(());
+        }
+
+        let mut args = vec!["-Rns", "--noconfirm"];
+        args.extend_from_slice(&present);
+        self.runner.stream_in(Some(MOUNT_ROOT), "pacman", &args)?;
+
+        self.note(format!(
+            "{} : {} paquets superflus retirés",
+            desktop.label(),
+            present.len()
+        ));
+        Ok(())
+    }
+
     fn configure_desktop(&mut self) -> Result<()> {
         self.require_target()?;
         let desktop = self.config.desktop;
         let manager = desktop.display_manager();
+
+        self.trim_desktop(desktop)?;
 
         // Exactly one display manager may own display-manager.service.
         for unit in manager.others() {

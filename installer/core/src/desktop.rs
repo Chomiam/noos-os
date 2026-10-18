@@ -55,6 +55,17 @@ impl DisplayManager {
 pub struct DesktopProfile {
     /// Extra packages for this desktop, on top of [`COMMON_PACKAGES`].
     pub packages: &'static [&'static str],
+    /// Packages the profile installs and then takes back out again.
+    ///
+    /// Only useful where a *group* is installed: `pacstrap gnome` pulls all 58
+    /// members, and no pacman-side mechanism selects a subset of a group. So the
+    /// group goes in whole and these come back out in the desktop step.
+    ///
+    /// Every entry must be a leaf — nothing else installed may depend on it.
+    /// pacman will happily remove a package something else needs and leave that
+    /// something broken, and the failure surfaces much later as a panel or a
+    /// button that does nothing.
+    pub removals: &'static [&'static str],
     pub display_manager: DisplayManager,
     /// `greeter-session` for `/etc/lightdm/lightdm.conf`, when relevant.
     pub greeter_session: Option<&'static str>,
@@ -115,6 +126,14 @@ impl Desktop {
         self.profile().display_manager
     }
 
+    /// Packages to take back out once `pacstrap` has resolved the group.
+    ///
+    /// Empty for every profile that lists its packages explicitly — only a
+    /// group can pull in things nobody selected.
+    pub fn removals(self) -> &'static [&'static str] {
+        self.profile().removals
+    }
+
     /// Package owning the desktop's session entry, for the summary screen.
     pub fn label(self) -> &'static str {
         match self {
@@ -128,6 +147,11 @@ impl Desktop {
 
 /// GNOME and Budgie are deliberately mutually exclusive: Budgie pulls in a
 /// large slice of the GNOME stack, so installing both is slow and redundant.
+///
+/// The `gnome` group is 58 packages, and most of what it carries is a
+/// full-fledged application suite nobody asked for. Everything in `removals`
+/// below is a **leaf** — verified against `pacman -Sii` — so taking it out
+/// cannot break the desktop. Together they are about 178 MiB.
 static GNOME: DesktopProfile = DesktopProfile {
     packages: &[
         "gnome",
@@ -135,9 +159,54 @@ static GNOME: DesktopProfile = DesktopProfile {
         "gdm",
         "xdg-desktop-portal-gnome",
     ],
+    removals: &[
+        // Documentation and its viewer. The largest single item in the group,
+        // and the Help buttons that open it are rarely pressed.
+        "gnome-user-docs",
+        "yelp",
+        // The screen reader. Removing it is a real accessibility trade-off,
+        // not a size one — put it back for any image meant for a wide public.
+        "orca",
+        // Browsers and stores: the distro ships pacman, yay and Shelly instead.
+        "epiphany",
+        "gnome-software",
+        // Media players — all three of GNOME's, replaced by VLC.
+        "showtime",
+        "decibels",
+        "gnome-music",
+        // `grilo-plugins` is gnome-music's metadata backend and goes with it.
+        "grilo-plugins",
+        // Small single-purpose apps.
+        "gnome-calculator",
+        "gnome-maps",
+        "gnome-weather",
+        "gnome-clocks",
+        "gnome-calendar",
+        "gnome-contacts",
+        "gnome-font-viewer",
+        "snapshot",
+        // The guided tour that runs on first login.
+        "gnome-tour",
+        // Remote desktop, both ends: nothing here wants to be a VNC server.
+        "gnome-remote-desktop",
+    ],
     display_manager: DisplayManager::Gdm,
     greeter_session: None,
 };
+
+// What the GNOME trim deliberately leaves alone, so a later reader does not
+// "finish the job" and break something:
+//
+//   gnome-console        the only terminal in the group, and vim, nano and
+//                        man-db are installed
+//   papers, loupe        the only PDF and image viewers; VLC does neither
+//   gnome-text-editor    the only graphical editor
+//   gnome-disk-utility   how a user inspects the btrfs subvolumes
+//   gnome-color-manager  \
+//   tecla                 > hard dependencies of gnome-control-center —
+//   malcontent           /  removing them takes the Settings app with them
+//   gnome-backgrounds    the wallpaper set; replace it only once the image
+//                        ships a wallpaper of its own
 
 /// `plasma` (68 packages), never `plasma` + `kde-applications` (193).
 static PLASMA: DesktopProfile = DesktopProfile {
@@ -149,6 +218,7 @@ static PLASMA: DesktopProfile = DesktopProfile {
         "sddm",
         "xdg-desktop-portal-kde",
     ],
+    removals: &[],
     display_manager: DisplayManager::Sddm,
     greeter_session: None,
 };
@@ -165,6 +235,7 @@ static CINNAMON: DesktopProfile = DesktopProfile {
         "lightdm",
         "lightdm-slick-greeter",
     ],
+    removals: &[],
     display_manager: DisplayManager::Lightdm,
     greeter_session: Some("lightdm-slick-greeter"),
 };
@@ -178,6 +249,7 @@ static BUDGIE: DesktopProfile = DesktopProfile {
         "lightdm",
         "lightdm-slick-greeter",
     ],
+    removals: &[],
     display_manager: DisplayManager::Lightdm,
     greeter_session: Some("lightdm-slick-greeter"),
 };
@@ -281,6 +353,86 @@ mod tests {
             "sddm.service" => "sddm",
             "lightdm.service" => "lightdm",
             other => panic!("service inconnu : {other}"),
+        }
+    }
+
+    #[test]
+    fn only_a_group_install_needs_removals() {
+        // Every other profile spells its packages out, so there is nothing to
+        // take back out; a non-empty list there would mean a package installed
+        // and removed in the same run.
+        for desktop in Desktop::all() {
+            if desktop == Desktop::Gnome {
+                assert!(
+                    !desktop.removals().is_empty(),
+                    "le groupe gnome a besoin d'être trié"
+                );
+            } else {
+                assert!(
+                    desktop.removals().is_empty(),
+                    "{} n'installe pas de groupe",
+                    desktop.label()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nothing_worth_keeping_is_removed() {
+        // What the trim leaves the desktop with. The first group is the only
+        // provider of something a user needs — a terminal, the PDF and image
+        // viewers, an editor, the disks tool, the wallpapers. The second group
+        // is what `gnome-control-center` depends on directly: removing one of
+        // those takes the Settings app with it, which reads as a broken desktop
+        // rather than as a missing accessory.
+        const KEPT: &[&str] = &[
+            "gnome-console",
+            "papers",
+            "loupe",
+            "gnome-text-editor",
+            "gnome-disk-utility",
+            "gnome-backgrounds",
+            "gnome-color-manager",
+            "tecla",
+            "malcontent",
+            "gnome-shell",
+            "gnome-session",
+            "gnome-settings-daemon",
+            "gnome-control-center",
+            "gdm",
+            "nautilus",
+            "gnome-keyring",
+            "gvfs",
+        ];
+        for name in KEPT {
+            assert!(
+                !Desktop::Gnome.removals().contains(name),
+                "{name} ne doit pas figurer dans les retraits"
+            );
+        }
+    }
+
+    #[test]
+    fn the_gnome_media_players_go_because_vlc_replaces_them() {
+        // The group carries three of them; the image ships VLC instead.
+        for player in ["showtime", "decibels", "gnome-music"] {
+            assert!(
+                Desktop::Gnome.removals().contains(&player),
+                "{player} devrait être retiré au profit de VLC"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_is_installed_and_removed_in_the_same_run() {
+        for desktop in Desktop::all() {
+            for name in desktop.removals() {
+                assert!(
+                    !desktop.packages().contains(name),
+                    "{} : {name} est installé puis retiré",
+                    desktop.label()
+                );
+            }
         }
     }
 }
