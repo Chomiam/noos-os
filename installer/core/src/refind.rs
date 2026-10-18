@@ -113,12 +113,41 @@ pub fn refind_linux_conf(btrfs_uuid: &str, swap_uuid: Option<&str>) -> String {
     )
 }
 
+/// What rEFInd scans for, written out in full.
+///
+/// **`scanfor` replaces the list, it does not extend it.** Naming a subset —
+/// `internal,external,manual` was the first thing written here — silently
+/// removes every boot method not named, and rEFInd says nothing about it: the
+/// tags simply are not there. The documented default on a UEFI PC is
+/// `internal,external,optical,netboot,cd`, with `hdbios`, `biosexternal` and
+/// `firmware` off; the whole set is spelled out so that omitting one is a
+/// deliberate act rather than an oversight.
+///
+/// `manual` is the one addition over the default, and it is mandatory: without
+/// it rEFInd ignores every `menuentry` in this file, our own included.
+///
+/// `firmware` stays off, matching the default. Turning it on would list the
+/// firmware's own boot options — Windows' entry and ours among them — as
+/// duplicates of the loaders found on the ESP.
+///
+/// **This is what finds Windows on a dual-boot machine.** Its loader sits at
+/// `EFI/Microsoft/Boot/bootmgfw.efi` on an ESP, which the `internal` scan
+/// covers; rEFInd recognises it by its conventional path and gives it the
+/// Windows icon. No driver and no stanza are needed: the file is on FAT, which
+/// the firmware reads natively.
+pub const SCANFOR: &str = "internal,external,optical,netboot,cd,manual";
+
 /// Renders `/boot/EFI/refind/refind.conf`.
 ///
 /// Deliberately short. rEFInd is largely self-configuring: it finds the kernel,
-/// finds the theme, and `refind-btrfs` adds its own `include` lines for the
-/// snapshot stanzas. Every line here has to earn its place, because a wrong
-/// token is ignored in silence.
+/// finds the theme, finds other operating systems, and `refind-btrfs` adds its
+/// own `include` lines for the snapshot stanzas. Every line here has to earn its
+/// place, because a wrong token is ignored in silence.
+///
+/// Nothing here excludes a volume or a directory. `dont_scan_volumes` and
+/// `dont_scan_dirs` exist and are exactly how a dual-boot Windows installation
+/// disappears from the menu; there is no reason to use either, and a test below
+/// keeps them out.
 ///
 /// There is no `use_nvram false`: rEFInd may maintain its own boot order in
 /// NVRAM, and suppressing that is a workaround for Macs, not for this.
@@ -139,9 +168,9 @@ pub fn refind_conf(kernel: Kernel) -> String {
          \n\
          timeout 5\n\
          \n\
-         # `internal` and `external` find other EFI loaders; `manual` is what makes\n\
-         # the entry below appear at all — without it a menuentry is ignored.\n\
-         scanfor internal,external,manual\n\
+         # Replaces rEFInd's list rather than adding to it — see the note on\n\
+         # SCANFOR in installer/core/src/refind.rs.\n\
+         scanfor {scanfor}\n\
          \n\
          include themes/{theme}/theme.conf\n\
          \n\
@@ -150,6 +179,7 @@ pub fn refind_conf(kernel: Kernel) -> String {
          \x20   loader /{kernel}\n\
          \x20   initrd /{initramfs}\n\
          }}\n",
+        scanfor = SCANFOR,
         theme = THEME_NAME,
         os_name = InstallConfig::OS_ENTRY_NAME,
         icon = theme_icon_path(),
@@ -231,7 +261,53 @@ mod tests {
     fn manual_scanning_is_enabled() {
         // Without `manual` in `scanfor`, a `menuentry` is silently ignored and
         // the menu shows nothing but whatever rEFInd found by itself.
-        assert!(refind_conf(Kernel::Linux).contains("scanfor internal,external,manual"));
+        assert!(SCANFOR.split(',').any(|m| m.trim() == "manual"));
+    }
+
+    #[test]
+    fn scanfor_replaces_the_list_so_it_is_spelled_out_in_full() {
+        // `scanfor` does not extend rEFInd's defaults, it replaces them. A
+        // subset silently removes every boot method not named — no message, the
+        // tags are simply absent. `internal,external,manual` was written here
+        // first and dropped optical, netboot and cd.
+        let methods: Vec<&str> = SCANFOR.split(',').map(str::trim).collect();
+        for required in ["internal", "external", "optical", "netboot", "cd", "manual"] {
+            assert!(methods.contains(&required), "{required} manque à scanfor");
+        }
+        // Off by default on a UEFI PC, and turning it on would duplicate every
+        // firmware boot option.
+        assert!(!methods.contains(&"firmware"));
+        assert!(!methods.contains(&"hdbios"));
+    }
+
+    #[test]
+    fn dual_boot_is_never_hidden() {
+        // A Windows installation lives at EFI/Microsoft/Boot/bootmgfw.efi on an
+        // ESP, which the `internal` scan covers, and rEFInd gives it its own
+        // icon from the path alone. What would break it is excluding a volume
+        // or a directory, so neither token may appear.
+        let conf = refind_conf(Kernel::Linux);
+        assert!(SCANFOR.contains("internal"), "les disques internes ne sont pas scannés");
+        for exclusion in ["dont_scan_volumes", "dont_scan_dirs", "hideui"] {
+            assert!(
+                !conf.contains(exclusion),
+                "{exclusion} ferait disparaître une installation Windows du menu"
+            );
+        }
+    }
+
+    #[test]
+    fn the_theme_does_not_replace_refinds_icon_set() {
+        // `icons_dir` points rEFInd at one directory *instead of* its own. Setting
+        // it to our theme would take Windows' icon with it, along with every
+        // other OS rEFInd knows by sight. Our own icon is named in the stanza
+        // instead, which affects only our entry.
+        for conf in [theme_conf(), refind_conf(Kernel::Linux)] {
+            assert!(
+                !conf.contains("icons_dir"),
+                "icons_dir supprimerait les icônes que rEFInd fournit"
+            );
+        }
     }
 
     #[test]
