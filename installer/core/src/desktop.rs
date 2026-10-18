@@ -155,7 +155,19 @@ impl Desktop {
 static GNOME: DesktopProfile = DesktopProfile {
     packages: &[
         "gnome",
+        // The two tools that make a stock GNOME usable: the settings
+        // `gnome-control-center` does not expose, and a way to install
+        // extensions at all.
+        //
+        // `extension-manager` and **not** `gnome-shell-extensions`: the latter
+        // is a *collection of extensions* — classic mode, the applications
+        // menu, and a dozen others — installed whether or not anybody wants
+        // them. The name is one word away from the tool and the two are
+        // routinely confused. `gnome-extensions-app` is the official but
+        // minimal alternative; `extension-manager` browses and installs from
+        // extensions.gnome.org on its own, which is why it is the one here.
         "gnome-tweaks",
+        "extension-manager",
         "gdm",
         "xdg-desktop-portal-gnome",
     ],
@@ -421,6 +433,34 @@ mod tests {
                 "{player} devrait être retiré au profit de VLC"
             );
         }
+    }
+
+    #[test]
+    fn gnome_ships_tweaks_and_an_extension_manager() {
+        let packages = Desktop::Gnome.packages();
+        assert!(packages.contains(&"gnome-tweaks"), "gnome-tweaks manque");
+        assert!(
+            packages.contains(&"extension-manager"),
+            "aucun gestionnaire d'extensions : impossible d'en installer une"
+        );
+    }
+
+    #[test]
+    fn the_extension_collection_is_not_the_extension_manager() {
+        // `gnome-shell-extensions` is a *set of extensions* — classic mode, the
+        // applications menu and a dozen more — installed whether or not anyone
+        // wants them. `extension-manager` is the tool that installs extensions.
+        // One word apart, routinely confused, and the wrong one turns up in a
+        // desktop as a pile of unwanted features.
+        for desktop in Desktop::all() {
+            assert!(
+                !desktop.packages().contains(&"gnome-shell-extensions"),
+                "{} : gnome-shell-extensions est une collection d'extensions, \
+                 pas un gestionnaire",
+                desktop.label()
+            );
+        }
+        assert!(Desktop::Gnome.packages().contains(&"extension-manager"));
     }
 
     #[test]
