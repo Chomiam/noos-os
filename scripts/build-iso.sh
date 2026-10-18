@@ -294,10 +294,23 @@ scanfor internal,external,optical,netboot,manual
 # emergency shell. A live medium should default to itself.
 default_selection "noos-os live"
 
-# The systemd-boot binary we chainload *from* is itself an EFI loader sitting in
-# the image, so rEFInd offers it as "Fallback boot loader". Booting it would
-# loop straight back here.
-dont_scan_files bootx64.efi
+# rEFInd scans every disk it can read, not just the medium it was booted from,
+# so on a machine that already has noos-os installed the menu fills with that
+# system's kernels and bootloaders — and one of them, a kernel with no `root=`
+# of its own, sits at the top and gets picked. That is what happened on the
+# first boot of this medium: it tried the *installed* system's kernel and
+# dropped into an emergency shell, which reads as the live medium being broken.
+#
+# `NOOS-ESP` is this distribution's own ESP label, so on a live installer this
+# hides what we put there ourselves. A machine with Windows or another Linux is
+# left visible: being able to reach an existing system from the medium is a
+# rescue worth keeping, and those entries are labelled for what they are.
+dont_scan_volumes "NOOS-ESP"
+
+# Two EFI binaries that live in the image we were booted from. The systemd-boot
+# binary we chainload *from* would loop straight back here; the shell is already
+# offered by rEFInd as its own tool, so the auto-detected copy is a duplicate.
+dont_scan_files bootx64.efi,shellx64.efi
 
 include themes/noos/theme.conf
 
