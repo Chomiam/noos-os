@@ -126,6 +126,21 @@ readonly CHAOTIC_KEY="3056513887B78AEB"
 
 # `pacman-key --list-keys` on the local keyring, not on the fetched one: what
 # matters is whether the *host* has already accepted the key.
+# The keyring has to exist before anything can be signed with it.
+#
+# `--lsign-key` needs a **local secret key**, which `pacman-key --init` creates
+# and which a fresh container does not have. On a machine where pacman has been
+# used the keyring is already initialised and the omission is invisible — which
+# is why this only ever failed in CI, where it failed on every single run:
+#
+#   ERROR: There is no secret key available to sign with.
+#
+# `/etc/pacman.d/gnupg` is what `--init` creates, so its absence is the test.
+if [[ ! -d /etc/pacman.d/gnupg ]]; then
+  echo "  initialisation du trousseau pacman (absent)"
+  pacman-key --init
+fi
+
 if pacman-key --list-keys "$CHAOTIC_KEY" >/dev/null 2>&1; then
   echo "  clé $CHAOTIC_KEY déjà présente"
 else
