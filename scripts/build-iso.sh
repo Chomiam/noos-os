@@ -319,7 +319,12 @@ menuentry "noos-os live" {
     volume "$ISO_LABEL"
     loader /noos/boot/x86_64/vmlinuz-linux
     initrd /noos/boot/x86_64/initramfs-linux.img
-    options archisobasedir=noos archisolabel=$ISO_LABEL quiet splash
+    # Quoted, and it is not cosmetic: rEFInd reads a bare `options` value as a
+    # single token, so only `archisobasedir=noos` arrived and `archisolabel`
+    # never reached the kernel. The archiso hook then had no device to mount —
+    # it reported `Mounting '' to /run/archiso/bootmnt` and gave up after 30
+    # seconds. The rEFInd sample config quotes this line for the same reason.
+    options "archisobasedir=noos archisolabel=$ISO_LABEL quiet splash"
 }
 EOF
 
