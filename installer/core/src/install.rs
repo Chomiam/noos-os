@@ -34,6 +34,21 @@ pub const MOUNT_ROOT: &str = "/mnt";
 /// the AUR step.
 const BUILDER_USER: &str = "noosbuilder";
 
+/// Where AUR packages are cloned and built inside the target.
+///
+/// **Deliberately not `/tmp`.** Every command the installer runs in the target
+/// is its own `arch-chroot` invocation, and `arch-chroot` mounts a fresh tmpfs
+/// on `/tmp` each time. Cloning, chowning and building are three separate
+/// invocations, so anything left under `/tmp` by the first is gone by the
+/// second: the chown fails on a directory that no longer exists, `?` aborts
+/// the whole AUR step, and the installation ends with neither yay nor the
+/// snapshot tooling installed.
+///
+/// The builder account survives that abort too — the end of the AUR step is
+/// what removes it — which is why [`Self::cleanup`] removes it as well.
+/// `/var/tmp` is a real filesystem, so it persists across invocations.
+const AUR_WORKDIR: &str = "/var/tmp";
+
 /// The AUR helper installed on the target.
 ///
 /// The `-bin` variant is a prebuilt binary; the source package would compile
@@ -1075,13 +1090,22 @@ impl<'a> Installer<'a> {
     fn configure_snapshots(&mut self) -> Result<()> {
         self.require_target()?;
 
+        // Both paths are absolute and belong to the *target*, so they need the
+        // mount prefix like every other config written here.
+        //
+        // Without it they land in the live medium's own `/etc` — an overlayfs
+        // thrown away at reboot — and the installed system keeps none of them.
+        // `limine-snapper-sync` then starts with no TARGET_OS_NAME, does not
+        // recognise the `noos-os` entry, and the snapshot submenu never
+        // appears. Nothing logs a word about it: the file was written, just not
+        // where anything reads it.
         exec::write_file(
-            snapshots::LIMINE_SNAPPER_SYNC_CONF,
+            format!("{MOUNT_ROOT}{}", snapshots::LIMINE_SNAPPER_SYNC_CONF),
             &snapshots::limine_snapper_sync_conf(self.uuids.swap.as_deref()),
             0o644,
         )?;
         exec::write_file(
-            snapshots::DEFAULT_LIMINE_CONF,
+            format!("{MOUNT_ROOT}{}", snapshots::DEFAULT_LIMINE_CONF),
             &snapshots::default_limine_conf(),
             0o644,
         )?;
@@ -1277,23 +1301,47 @@ impl<'a> Installer<'a> {
             self.runner.stream_in(
                 Some(MOUNT_ROOT),
                 "sudo",
-                &["-u", BUILDER_USER, AUR_HELPER, "-S", "--noconfirm", package],
+                &[
+                    "-H",
+                    "-u",
+                    BUILDER_USER,
+                    AUR_HELPER,
+                    "-S",
+                    "--noconfirm",
+                    package,
+                ],
             )?;
         }
 
-        // The builder account exists only for this step.
+        self.remove_builder();
+        Ok(())
+    }
+
+    /// Removes the temporary build account and its sudoers drop-in.
+    ///
+    /// Best effort on each part: it is called both at the end of the AUR step
+    /// and from [`Self::cleanup`], and by then either may already be gone. The
+    /// second call is the point — the AUR step is optional and can abort part
+    /// way through, which would otherwise leave `noosbuilder` on the disk with
+    /// a live `NOPASSWD: ALL` rule.
+    fn remove_builder(&self) {
         let _ = self
             .runner
             .stream_in(Some(MOUNT_ROOT), "userdel", &["-r", BUILDER_USER]);
         let _ = std::fs::remove_file(format!("{MOUNT_ROOT}/etc/sudoers.d/20-noos-builder"));
-
-        Ok(())
     }
 
     /// Clones and builds one AUR package as the non-root builder user.
+    ///
+    /// Every `sudo -u` here passes `-H`. Without it sudo keeps the *invoking*
+    /// user's HOME — root's, since the installer runs as root — so `makepkg`
+    /// and the tools it drives write to `/root`, which the builder cannot
+    /// touch. Gradle in particular fails with "Could not initialize native
+    /// services" and never names the directory it was refused, so the real
+    /// cause is three removes away from the message.
     fn build_aur_package(&self, package: &str) -> Result<()> {
         let url = format!("https://aur.archlinux.org/{package}.git");
-        let workdir = format!("/tmp/{package}");
+        let workdir = format!("{AUR_WORKDIR}/{package}");
         let ownership = format!("{BUILDER_USER}:{BUILDER_USER}");
         let build = format!("cd {workdir} && makepkg -si --noconfirm");
 
@@ -1313,7 +1361,7 @@ impl<'a> Installer<'a> {
         self.runner.stream_in(
             Some(MOUNT_ROOT),
             "sudo",
-            &["-u", BUILDER_USER, "sh", "-c", build.as_str()],
+            &["-H", "-u", BUILDER_USER, "sh", "-c", build.as_str()],
         )?;
 
         Ok(())
@@ -1366,6 +1414,10 @@ impl<'a> Installer<'a> {
     }
 
     fn cleanup(&mut self) -> Result<()> {
+        // Unconditional, so the build account cannot outlive the installation
+        // even if the AUR step aborted before its own removal ran.
+        self.remove_builder();
+
         self.note("Démontage");
         // `-R` so nested mounts (the ESP under /boot) come down with the root.
         let _ = self.runner.stream("umount", &["-R", MOUNT_ROOT]);
@@ -1769,6 +1821,36 @@ mod tests {
         // The -bin variant: the source package compiles Go in the chroot.
         assert_eq!(AUR_HELPER_PACKAGE, "yay-bin");
         assert!(AUR_HELPER_PACKAGE.starts_with(AUR_HELPER));
+    }
+
+    #[test]
+    fn aur_builds_stay_out_of_the_chroot_tmpfs() {
+        // `arch-chroot` gives every invocation its own tmpfs on /tmp, and
+        // build_aur_package clones, chowns and builds in three separate
+        // invocations. A work directory under /tmp is gone by the second one,
+        // so the chown fails on a directory that does not exist and the whole
+        // AUR step aborts — with nothing installed and the builder account left
+        // behind.
+        assert!(
+            !AUR_WORKDIR.starts_with("/tmp"),
+            "le répertoire de construction AUR ne peut pas être sous /tmp : {AUR_WORKDIR}"
+        );
+        assert!(AUR_WORKDIR.starts_with('/'), "chemin absolu attendu : {AUR_WORKDIR}");
+    }
+
+    #[test]
+    fn the_builder_account_is_removed_even_if_the_aur_step_aborts() {
+        // finalize is what makes the removal unconditional: the AUR step is
+        // optional and can stop half way, before its own cleanup.
+        let body = include_str!("install.rs");
+        let finalize = body
+            .split("fn cleanup(&mut self)")
+            .nth(1)
+            .expect("cleanup doit exister");
+        assert!(
+            finalize.contains("remove_builder()"),
+            "la finalisation doit supprimer le compte de construction"
+        );
     }
 
     #[test]
