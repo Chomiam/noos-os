@@ -136,8 +136,9 @@ Ensuite :
 Deux pièges connus à garder en tête :
 
   * edk2-ovmf 202505-1 et suivants font geler le démarrage UEFI des invités
-    amorcés par GRUB. Notre ISO live utilise systemd-boot, donc elle devrait
-    passer — mais si un invité se fige au démarrage, c'est la première piste.
+    amorcés par GRUB. Notre ISO live passe par systemd-boot puis rEFInd, et ni
+    l'un ni l'autre n'est GRUB — mais si un invité se fige au démarrage, c'est
+    la première piste.
 
   * L'accélération OpenGL 3D avec egl-headless est cassée sur les hôtes
     NVIDIA. Cette machine est en AMD, elle n'est pas concernée.

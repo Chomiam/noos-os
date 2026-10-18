@@ -119,7 +119,7 @@
     "nvidiaLegacyNone": "No branch selected: no proprietary driver will be installed.",
     "nvidiaWarning": "Choosing the wrong branch leaves the machine with no display. If unsure, leave this empty and install the driver after the first boot.",
     "aur": "AUR support",
-    "aurHint": "Installs yay and the limine snapshot tooling. Requires a network connection.",
+    "aurHint": "Installs yay and the btrfs snapshot tooling. Requires a network connection.",
     "shelly": "Install Shelly",
     "shellyHint": "Alternative package manager, with a graphical interface and AUR support.",
     "network": "Network",

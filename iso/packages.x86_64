@@ -48,11 +48,12 @@ dmidecode
 nvme-cli
 hdparm
 
-## Bootloader tooling for the target -----------------------------------------
-# `limine bios-install` runs from the live environment, not from the chroot,
-# so the binary has to be here as well as on the target.
+## Bootloader tooling --------------------------------------------------------
+# Only `efibootmgr`. The *target*'s bootloader is rEFInd, installed by pacstrap
+# and copied out of the target's own `/usr/share/refind` — the live medium has
+# no reason to carry it. What the live medium boots with is rEFInd's own copy,
+# staged into the EFI image by scripts/build-iso.sh, not a package here.
 
-limine
 efibootmgr
 
 ## Networking ----------------------------------------------------------------

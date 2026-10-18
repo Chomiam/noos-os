@@ -119,7 +119,7 @@
     "nvidiaLegacyNone": "Aucune branche sélectionnée : aucun pilote propriétaire ne sera installé.",
     "nvidiaWarning": "Se tromper de branche laisse la machine sans affichage. En cas de doute, laisse vide et installe le pilote après le premier démarrage.",
     "aur": "Support AUR",
-    "aurHint": "Installe yay et les outils de snapshot limine. Nécessite une connexion réseau.",
+    "aurHint": "Installe yay et l'outillage de snapshots btrfs. Nécessite une connexion réseau.",
     "shelly": "Installer Shelly",
     "shellyHint": "Gestionnaire de paquets alternatif, avec interface graphique et support AUR.",
     "network": "Réseau",

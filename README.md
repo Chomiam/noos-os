@@ -5,7 +5,7 @@
 Une distribution basée sur Arch : une ISO live construite avec `archiso` qui
 démarre directement sur un **installateur graphique plein écran** — pas de
 bureau — et qui installe un système Arch avec **btrfs + snapshots restaurables
-depuis limine**.
+depuis rEFInd**.
 
 ## Construire l'ISO
 
@@ -74,14 +74,14 @@ virtio-gpu avec accélération 3D. `./scripts/run-vm.sh clean` efface tout.
 
 1. L'ISO démarre sur systemd-boot et lance l'installateur en plein écran.
 2. Le parcours complet aboutit, le terminal affiche la sortie de pacstrap.
-3. Après redémarrage, le système installé démarre sur limine.
+3. Après redémarrage, le système installé démarre sur rEFInd.
 
 Sur le système installé :
 
 ```bash
 findmnt                          # les sous-volumes btrfs sont-ils montés ?
 snapper -c root list             # des snapshots existent-ils ?
-limine-snapper-list              # sont-ils exposés dans le menu limine ?
+cat /boot/EFI/refind/noos-snapshots/*.conf   # les entrées générées par refind-btrfs
 ```
 
 ### Si l'interface ne s'affiche pas
@@ -112,11 +112,16 @@ Sous-volumes : `@` → `/` (le seul snapshoté), `@home`, `@log`, `@cache`,
 
 Trois contraintes non négociables, chacune expliquée dans le code :
 
-- **`/boot` doit être FAT32.** limine ne lit que FAT12/16/32 et ISO9660 — une
-  partition `/boot` en ext4 rendrait le système non amorçable.
-- **8 Gio de `/boot` ne sont pas du gaspillage.** `limine-snapper-sync` y copie
-  le noyau et l'initramfs *de chaque snapshot* pour que chaque snapshot soit
-  amorçable. Le minimum documenté est 4 Gio.
+- **`/boot` doit être FAT32.** Le firmware lit le FAT nativement et rEFInd en
+  hérite ; un `/boot` en btrfs obligerait rEFInd à charger son propre pilote,
+  dont le wiki Arch dit qu'il se trompe sur un volume dédupliqué ou en
+  copy-on-write.
+- **1 Gio de `/boot` suffisent.** Il porte le noyau, son initramfs, le microcode
+  et les fichiers de rEFInd. Les 8 Gio d'avant servaient à `limine-snapper-sync`,
+  qui y copiait un noyau par instantané ; rEFInd partage un seul noyau et ne
+  change que le sous-volume racine. **Contrepartie assumée : les instantanés ne
+  restaurent plus le noyau** — une mise à jour qui casse le démarrage ne se
+  rattrape plus en démarrant un instantané.
 - **La swap est une partition, pas un fichier.** Un sous-volume contenant un
   swapfile actif ne peut pas être snapshoté : un swapfile dans `@` bloquerait
   toute la chaîne de rollback.
@@ -124,11 +129,14 @@ Trois contraintes non négociables, chacune expliquée dans le code :
 ## Le dépôt Chaotic-AUR
 
 Trois paquets dont la distribution a besoin viennent de l'AUR, qui ne distribue
-que des sources. Deux d'entre eux — `limine-snapper-sync` et
-`limine-mkinitcpio-hook` — se compilent en **image native GraalVM** : un JDK de
-300 Mo, Gradle, et une compilation ahead-of-time qui échoue sous `makepkg` en
-sortant 30 sans le moindre message. La distribution les prend donc dans
-**Chaotic-AUR**, qui les sert en binaires signés.
+que des sources. `refind-btrfs` est un programme Python — il *pourrait* être
+construit — mais il vient de **Chaotic-AUR** comme `yay`, pour qu'il n'y ait
+qu'un seul chemin pour les paquets AUR.
+
+L'historique vaut d'être connu : la chaîne de snapshots reposait sur
+`limine-snapper-sync` et `limine-mkinitcpio-hook`, qui se compilent en **image
+native GraalVM** — un JDK de 300 Mo, Gradle, et une compilation ahead-of-time
+qui échoue sous `makepkg` en sortant 30 sans le moindre message.
 
 Le dépôt est activé **sur la machine de build et sur la cible** :
 
@@ -153,7 +161,7 @@ AOT. Voir `installer/core/src/chaotic.rs`.
 ```
 installer/
   core/           moteur d'installation, sans dépendance Tauri — 215 tests
-    src/          layout, btrfs, limine, snapshots, chaotic, flatpak, kernel,
+    src/          layout, btrfs, refind, snapshots, chaotic, flatpak, kernel,
                   keyboard, network, powersave, gpu, services, validate
     src/bin/      CLI : plan | gpu | check | install
   src-tauri/      l'application Tauri v2 (interface)
@@ -173,6 +181,7 @@ scripts/
   generate-map-data.js          carte du monde et fuseaux, depuis Natural Earth
   generate-nvidia-table.js      table de détection NVIDIA, depuis les sources NVIDIA
   generate-plymouth-frames.js   images du splash, depuis noos-svg.svg
+  generate-refind-theme.js      thème du menu rEFInd, depuis noos-svg.svg
   generate-flatpak-remote.sh    définition du dépôt Flathub, depuis Flathub
 .github/workflows/
   build-iso.yml   construit l'ISO en CI et la publie sur tag
@@ -180,7 +189,7 @@ scripts/
 
 Le moteur est une bibliothèque sans dépendance Tauri : l'application graphique,
 la CLI et les tests pilotent tous le même code. Tout ce qui *décrit*
-l'installation (tailles de partitions, `fstab`, `limine.conf`, réglages
+l'installation (tailles de partitions, `fstab`, `refind.conf`, réglages
 snapper) est une fonction pure, donc vérifiable sans root.
 
 ## La CLI
@@ -194,12 +203,16 @@ noos-install install config.json  # exécute (nécessite root)
 
 ## Notes
 
-- **L'ISO live est UEFI uniquement.** Le système *installé* démarre avec limine
-  sur UEFI comme sur BIOS, mais le média live se limite à UEFI : tout le
-  matériel visé l'est, et abandonner syslinux supprime un ensemble de fichiers
-  de configuration concaténés à tester. Pour le rétablir : ajouter
-  `bios.syslinux` à `bootmodes` dans `profiledef.sh` et copier le répertoire
-  `syslinux/` du profil releng.
+- **UEFI uniquement, pour le live comme pour la cible.** rEFInd n'a pas
+  d'équivalent à l'écriture d'un chargeur dans le MBR d'un disque : sur une
+  machine BIOS, l'installateur échoue en le disant, plutôt que de laisser un
+  disque non amorçable passer pour une installation réussie.
+- **Le média live passe par systemd-boot avant rEFInd.** mkarchiso n'a pas de
+  mode rEFInd et ne lit que `loader.conf` et `entries/` d'un profil : il n'existe
+  aucun moyen supporté de lui confier un binaire EFI supplémentaire. systemd-boot
+  est donc construit normalement — c'est lui qui produit une image UEFI valide —
+  et son unique entrée, en `timeout 0`, passe la main à rEFInd sans jamais
+  afficher de menu. Le détail est dans `scripts/build-iso.sh`.
 - **Aucun fichier appartenant à un paquet n'est livré dans `airootfs`.**
   `airootfs` est copié *avant* que `pacstrap` tourne, donc livrer par exemple
   `/etc/locale.gen` (qui appartient à `glibc`) ferait refuser l'installation du

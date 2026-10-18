@@ -13,29 +13,40 @@ iso_application="noos-os live/install medium"
 iso_version="$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y.%m.%d)"
 install_dir="noos"
 
-# UEFI only.
+# UEFI only, and systemd-boot only as a hand-off.
 #
-# The *installed* system boots with limine on both firmware types — that is the
-# installer's job. The live medium is UEFI-only because every machine this
-# targets is UEFI, and dropping the syslinux mode removes a set of concatenated
-# boot configs (archiso_head + archiso_sys + archiso_tail) that would otherwise
-# need their own testing. To bring BIOS back: add 'bios.syslinux' here and copy
-# the releng profile's syslinux/ directory into this one.
+# The *installed* system boots with rEFInd, which is UEFI-only — it has no
+# equivalent of writing a bootloader into a disk's MBR, and the installer says
+# so rather than leaving the disk unbootable.
+#
+# This mode is not what the live medium shows. mkarchiso has no rEFInd bootmode,
+# so systemd-boot is built here — it is what produces a valid UEFI image — and
+# its single entry chainloads rEFInd, which draws the menu. See the entry in
+# efiboot/ and the staging step in scripts/build-iso.sh.
+#
+# Dropping syslinux also removes a set of concatenated boot configs
+# (archiso_head + archiso_sys + archiso_tail) that would need their own testing.
 bootmodes=('uefi.systemd-boot')
 
 arch="x86_64"
 pacman_conf="pacman.conf"
 airootfs_image_type="squashfs"
 
-# Substituted into %KERNEL_PARAMS% in the boot entry.
+# Kernel parameters for the live medium.
+#
+# Kept for the profile's own record, but note that nothing substitutes it any
+# more: `%KERNEL_PARAMS%` has no user now that rEFInd, not systemd-boot, is what
+# loads the live kernel. The command line actually used is written by
+# scripts/build-iso.sh into rEFInd's configuration, and it matches this line.
+# Editing one without the other has no effect on the boot.
 #
 # `splash` activates the Plymouth theme defined in airootfs; `quiet` keeps the
 # kernel from printing over it. The two go together — a splash with kernel
 # messages scrolling across it looks broken.
 #
-# Recovery, if the splash ever hangs: the systemd-boot editor is enabled, so
-# the command line can be amended at the menu with `plymouth.enable=0`, and
-# Ctrl+Alt+F2 still reaches a shell.
+# Recovery, if the splash ever hangs: rEFInd has an options editor (press F2 on
+# an entry), so `plymouth.enable=0` can be added at the menu, and Ctrl+Alt+F2
+# still reaches a shell.
 kernel_params_x86_64="quiet splash"
 
 # zstd rather than releng's xz: the build is several times faster and the ISO
