@@ -7,8 +7,8 @@
 
 use std::path::Path;
 
-use crate::aur;
 use crate::btrfs;
+use crate::chaotic;
 use crate::config::{Firmware, InstallConfig};
 use crate::desktop;
 use crate::error::{Error, Result};
@@ -104,6 +104,11 @@ pub const STEPS: &[Step] = &[
     Step { id: "partition", title: "Partitionnement du disque", criticality: Criticality::Required },
     Step { id: "subvolumes", title: "Création des sous-volumes btrfs", criticality: Criticality::Required },
     Step { id: "pacstrap", title: "Installation des paquets", criticality: Criticality::Required },
+    // Right after the base system, and before anything that expects the
+    // snapshot chain: `limine-snapper-sync` owns the configuration file the
+    // `snapshots` step writes, and writing it before the package exists would
+    // leave pacman refusing to install that package later.
+    Step { id: "chaotic", title: "Dépôt Chaotic-AUR", criticality: Criticality::Required },
     Step { id: "fstab", title: "Génération de /etc/fstab", criticality: Criticality::Required },
     Step { id: "locale", title: "Langue, fuseau horaire et nom de machine", criticality: Criticality::Required },
     Step { id: "initramfs", title: "Configuration de l'initramfs", criticality: Criticality::Required },
@@ -178,6 +183,7 @@ impl<'a> Installer<'a> {
                 "partition" => self.partition(),
                 "subvolumes" => self.subvolumes(),
                 "pacstrap" => self.pacstrap(),
+                "chaotic" => self.configure_chaotic(),
                 "fstab" => self.write_fstab(),
                 "locale" => self.configure_locale(),
                 "initramfs" => self.configure_initramfs(),
@@ -1289,18 +1295,24 @@ impl<'a> Installer<'a> {
     /// And the medium's packages are installed even when the user declined AUR
     /// support: they are local files, and they are the snapshot chain the
     /// distribution exists for.
+    /// Installs the AUR helper, and anything still missing, by building it.
+    ///
+    /// Chaotic-AUR covers everything this distribution needs, so in the ordinary
+    /// case this finds it all already installed and does nothing. It stays as
+    /// the fallback for a package Chaotic does not carry and for a machine where
+    /// the repository is out of reach — the only part of the installation that
+    /// needs a compiler, and therefore the only part allowed to fail without
+    /// dooming the system.
     fn install_aur_support(&mut self) -> Result<()> {
         self.require_target()?;
 
-        self.install_from_medium()?;
-
-        let mut wanted: Vec<&str> = aur::PACKAGES.to_vec();
-        if !self.config.install_shelly {
-            wanted.retain(|name| *name != "shelly");
+        let mut wanted: Vec<&str> = snapshots::SNAPSHOT_CHAIN_PACKAGES.to_vec();
+        wanted.push(AUR_HELPER);
+        if self.config.install_shelly {
+            wanted.push("shelly");
         }
-        // A legacy NVIDIA branch is an AUR package, so it rides along here
-        // rather than with the repository packages. It is never shipped
-        // prebuilt: which branch is right depends on the card in the machine.
+        // A legacy NVIDIA branch is an AUR package. Which branch is right
+        // depends on the card in the machine, so it is never prebuilt.
         if let (Some(branch), Some(gpu::NvidiaPlan::Legacy)) =
             (self.config.nvidia_legacy, self.codec.nvidia)
         {
@@ -1309,13 +1321,13 @@ impl<'a> Installer<'a> {
 
         let missing = self.missing_packages(&wanted)?;
         if missing.is_empty() {
-            self.note(format!("{} paquets AUR installés", wanted.len()));
+            self.note(format!("{} paquets AUR en place", wanted.len()));
             return Ok(());
         }
 
         if !self.config.enable_aur {
-            // The medium covers what it covers; the rest needs the network and
-            // the user said no. Reported, not failed: the system is complete.
+            // Reported, not failed: the system is complete either way, and the
+            // user is the one who declined.
             self.note(format!(
                 "support AUR refusé : {} paquet(s) laissé(s) de côté — {}",
                 missing.len(),
@@ -1327,45 +1339,55 @@ impl<'a> Installer<'a> {
         self.build_from_aur(&missing)
     }
 
-    /// Installs the packages the ISO carries, straight from the live medium.
+    /// Makes the Chaotic-AUR repository usable inside the target.
     ///
-    /// No network and no compiler: the files are copied into the target and
-    /// handed to `pacman -U`. The copy is not ceremony — they have to be inside
-    /// the chroot for pacman to reach them.
-    fn install_from_medium(&self) -> Result<()> {
-        let listing: Vec<String> = match std::fs::read_dir(aur::DIR) {
-            Ok(entries) => entries
-                .flatten()
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .collect(),
-            // No directory means an ISO built without the prebuilt packages,
-            // which is a supported shape and not an error.
-            Err(_) => Vec::new(),
-        };
+    /// Three things, in an order that is forced:
+    ///
+    /// 1. **The mirror list first.** `[chaotic-aur]` includes it, so anything
+    ///    reading the section before the file exists fails — and the file cannot
+    ///    come from its own package, since pacman would have to fetch that
+    ///    package from the repository the file points at. It is copied from the
+    ///    live medium, which has carried it from the start.
+    /// 2. **Then the section**, appended to the target's `pacman.conf` — a file
+    ///    the `pacman` package owns, which is why it is patched rather than
+    ///    written.
+    /// 3. **Then a database refresh**, without which pacman does not know the
+    ///    repository exists and `pacman -S` answers "target not found".
+    ///
+    /// The keyring needs nothing here: `pacstrap` copies the live keyring into
+    /// the target, and the live medium carries `chaotic-keyring`, whose key
+    /// `pacman-key --populate` imports at boot. That is the whole reason the
+    /// package is in the medium's list.
+    fn configure_chaotic(&mut self) -> Result<()> {
+        self.require_target()?;
 
-        let files = aur::package_files(&listing);
-        if files.is_empty() {
-            self.note("aucun paquet AUR préconstruit sur le média");
-            return Ok(());
+        let mirrorlist = format!("{MOUNT_ROOT}{}", chaotic::MIRRORLIST_PATH);
+        std::fs::copy(chaotic::MIRRORLIST_PATH, &mirrorlist).map_err(|e| Error::io(&mirrorlist, e))?;
+
+        let conf = format!("{MOUNT_ROOT}{}", chaotic::PACMAN_CONF);
+        let current = std::fs::read_to_string(&conf).map_err(|e| Error::io(&conf, e))?;
+        exec::write_file(&conf, &chaotic::enable(&current), 0o644)?;
+
+        self.runner
+            .stream_in(Some(MOUNT_ROOT), "pacman", &["-Sy", "--noconfirm"])?;
+
+        // `chaotic-keyring` and `chaotic-mirrorlist` are installed as packages
+        // as well as copied: the copies make the repository usable now, the
+        // packages keep it working when Chaotic rotates its key.
+        let mut wanted: Vec<&str> = chaotic::REPO_PACKAGES.to_vec();
+        wanted.extend_from_slice(&CHAOTIC_PACKAGES);
+        if self.config.install_shelly {
+            wanted.push("shelly");
         }
 
-        let staged = format!("{MOUNT_ROOT}{}", aur::DIR);
-        exec::make_dir(&staged, 0o755)?;
-
-        let mut paths: Vec<String> = Vec::with_capacity(files.len());
-        for name in &files {
-            let source = format!("{}/{}", aur::DIR, name);
-            let destination = format!("{staged}/{name}");
-            std::fs::copy(&source, &destination).map_err(|e| Error::io(&destination, e))?;
-            paths.push(format!("{}/{}", aur::DIR, name));
-        }
-
-        self.note(format!("{} paquets AUR préconstruits", files.len()));
-        // `--needed` so a re-run does not reinstall what is already there.
-        let mut args: Vec<&str> = vec!["-U", "--noconfirm", "--needed"];
-        args.extend(paths.iter().map(String::as_str));
+        let mut args: Vec<&str> = vec!["-S", "--noconfirm", "--needed"];
+        args.extend_from_slice(&wanted);
         self.runner.stream_in(Some(MOUNT_ROOT), "pacman", &args)?;
 
+        self.note(format!(
+            "dépôt Chaotic-AUR activé, {} paquets installés",
+            wanted.len()
+        ));
         Ok(())
     }
 
@@ -1639,6 +1661,22 @@ const BASE_PACKAGES: &[&str] = &[
 ///   what provides `java-runtime=25` for anything that asks for a JRE.
 const APPLICATION_RUNTIMES: &[&str] = &["flatpak", "fuse3", "jre25-openjdk"];
 
+/// Packages taken from Chaotic-AUR rather than built.
+///
+/// The AUR is source-only, and two of these build a **GraalVM native image** —
+/// a 300 MB JDK download, Gradle, and an ahead-of-time compile that fails under
+/// `makepkg` with `native-image` exiting 30 and no message at all. Building them
+/// during installation was tried and abandoned; Chaotic serves them as signed
+/// binaries instead. See [`crate::chaotic`] for what that trade costs.
+const CHAOTIC_PACKAGES: &[&str] = &[
+    // The snapshot chain — the point of the distribution.
+    "limine-mkinitcpio-hook",
+    "limine-snapper-sync",
+    // The AUR helper. From Chaotic it is a binary like any other; the fallback
+    // path still knows how to build `yay-bin` if it is ever missing.
+    "yay",
+];
+
 /// The complete package list for a target system.
 ///
 /// Extracted from `pacstrap` so it can be tested. This list decides whether
@@ -1741,9 +1779,9 @@ mod tests {
     fn every_step_is_dispatched() {
         // Guards against adding a Step to STEPS and forgetting its arm in run().
         let dispatched = [
-            "preflight", "gpu", "partition", "subvolumes", "pacstrap", "fstab", "locale",
-            "initramfs", "users", "limine", "snapshots", "services", "powersave", "aur",
-            "desktop", "cleanup",
+            "preflight", "gpu", "partition", "subvolumes", "pacstrap", "chaotic", "fstab",
+            "locale", "initramfs", "users", "limine", "snapshots", "services", "powersave",
+            "aur", "desktop", "cleanup",
         ];
         for step in STEPS {
             assert!(
@@ -2015,6 +2053,34 @@ mod tests {
         // The -bin variant: the source package compiles Go in the chroot.
         assert_eq!(AUR_HELPER_PACKAGE, "yay-bin");
         assert!(AUR_HELPER_PACKAGE.starts_with(AUR_HELPER));
+    }
+
+    #[test]
+    fn the_snapshot_chain_comes_from_chaotic() {
+        // These two build a GraalVM native image, which is the entire reason
+        // the repository is enabled. Losing one from this list would leave the
+        // installation reporting success with no snapshot menu anywhere.
+        for package in snapshots::SNAPSHOT_CHAIN_PACKAGES {
+            assert!(
+                CHAOTIC_PACKAGES.contains(package),
+                "{package} doit venir de Chaotic-AUR"
+            );
+        }
+    }
+
+    #[test]
+    fn the_chaotic_packages_are_not_installed_by_pacstrap() {
+        // `pacstrap` runs against the *live* configuration, which has no
+        // `[chaotic-aur]` — the repository is configured in the target, after
+        // the base system exists. A package named in both places would make
+        // pacstrap fail with "target not found" before anything else runs.
+        let from_pacstrap = package_list(&sample_config(), &CodecPlan::default());
+        for package in CHAOTIC_PACKAGES.iter().chain(chaotic::REPO_PACKAGES) {
+            assert!(
+                !from_pacstrap.contains(&(*package).to_string()),
+                "{package} viendrait de pacstrap, qui ne connaît pas Chaotic-AUR"
+            );
+        }
     }
 
     #[test]

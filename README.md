@@ -38,7 +38,7 @@ protéger, donc le script y compile en root (détecté par `CI`).
 Résultat dans `out/`, accompagné d'un `.sha256`. Compte plusieurs minutes au
 premier build : environ 1,5 Gio de paquets, surtout `linux-firmware`.
 
-Le script se termine par une **vérification de l'ISO produite** : 41 contrôles
+Le script se termine par une **vérification de l'ISO produite** : 20 contrôles
 qui extraient le squashfs et vérifient ce qui a déjà cassé silencieusement —
 liens symboliques morts, binaire non exécutable, trousseau pacman absent,
 systemd-firstboot non masqué. Un build qui passe cette étape est cohérent avec
@@ -121,30 +121,59 @@ Trois contraintes non négociables, chacune expliquée dans le code :
   swapfile actif ne peut pas être snapshoté : un swapfile dans `@` bloquerait
   toute la chaîne de rollback.
 
+## Le dépôt Chaotic-AUR
+
+Trois paquets dont la distribution a besoin viennent de l'AUR, qui ne distribue
+que des sources. Deux d'entre eux — `limine-snapper-sync` et
+`limine-mkinitcpio-hook` — se compilent en **image native GraalVM** : un JDK de
+300 Mo, Gradle, et une compilation ahead-of-time qui échoue sous `makepkg` en
+sortant 30 sans le moindre message. La distribution les prend donc dans
+**Chaotic-AUR**, qui les sert en binaires signés.
+
+Le dépôt est activé **sur la machine de build et sur la cible** :
+
+- au build, pour que le média live embarque `chaotic-keyring` et
+  `chaotic-mirrorlist` ;
+- sur la cible, pour que l'installateur y prenne la chaîne de snapshots et `yay`
+  comme dans n'importe quel dépôt — et pour que l'utilisateur garde ensuite une
+  vaste source de paquets AUR précompilés.
+
+Le maillon est le trousseau : `pacman-key --populate` du média live importe la
+clé de Chaotic, et `pacstrap` copie ce trousseau dans la cible. C'est ce qui
+permet au premier `pacman -Sy` de la cible de vérifier ce que Chaotic sert.
+
+**C'est un dépôt tiers auquel la distribution fait confiance par défaut.** Tous
+ses paquets sont construits par l'infrastructure de Chaotic, ni par nous ni par
+l'utilisateur. C'est le prix ; l'alternative était d'embarquer une chaîne de
+compilation dans un installateur et de demander à la machine de compiler du Java
+AOT. Voir `installer/core/src/chaotic.rs`.
+
 ## Organisation
 
 ```
 installer/
-  core/           moteur d'installation, sans dépendance Tauri — 185 tests
-    src/          layout, btrfs, limine, snapshots, kernel, keyboard,
-                  network, powersave, gpu, services, validate
+  core/           moteur d'installation, sans dépendance Tauri — 215 tests
+    src/          layout, btrfs, limine, snapshots, chaotic, flatpak, kernel,
+                  keyboard, network, powersave, gpu, services, validate
     src/bin/      CLI : plan | gpu | check | install
   src-tauri/      l'application Tauri v2 (interface)
   src/            frontend React (9 écrans, FR/EN)
 iso/
   profiledef.sh   profil archiso (UEFI uniquement)
+  pacman.conf     miroirs Arch + section [chaotic-aur]
   packages.x86_64 paquets du média live
   airootfs/       autologin tty1 → cage, réseau, trousseau pacman, Plymouth
   efiboot/        configuration systemd-boot du live
 scripts/
-  build-iso.sh               construit l'ISO et la vérifie
-  run-vm.sh                  crée et démarre la VM de test
-  setup-virt.sh              installe et configure libvirt + virt-manager
-  fix-ufw-libvirt.sh         rend le réseau libvirt compatible avec ufw
-  generate-keymaps.js        tables de clavier, depuis xkbcli
-  generate-map-data.js       carte du monde et fuseaux, depuis Natural Earth
-  generate-nvidia-table.js   table de détection NVIDIA, depuis les sources NVIDIA
-  generate-plymouth-frames.js images du splash, depuis noos-svg.svg
+  build-iso.sh                  construit l'ISO et la vérifie
+  run-vm.sh                     crée et démarre la VM de test
+  setup-virt.sh                 installe et configure libvirt + virt-manager
+  fix-ufw-libvirt.sh            rend le réseau libvirt compatible avec ufw
+  generate-keymaps.js           tables de clavier, depuis xkbcli
+  generate-map-data.js          carte du monde et fuseaux, depuis Natural Earth
+  generate-nvidia-table.js      table de détection NVIDIA, depuis les sources NVIDIA
+  generate-plymouth-frames.js   images du splash, depuis noos-svg.svg
+  generate-flatpak-remote.sh    définition du dépôt Flathub, depuis Flathub
 .github/workflows/
   build-iso.yml   construit l'ISO en CI et la publie sur tag
 ```

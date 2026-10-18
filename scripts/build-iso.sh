@@ -103,28 +103,50 @@ else
   echo "  avertissement : Flathub injoignable, la copie versionnée est conservée"
 fi
 
-# The AUR packages, built here and carried on the medium.
+# The Chaotic-AUR repository, on the build host.
 #
-# This is what keeps the installation from compiling them: two of the four
-# build a GraalVM native image, and that build fails under makepkg inside the
-# installer's chroot — see installer/core/src/aur.rs. Building them now, as a
-# normal user on a real system, is the whole point.
+# Two things are needed before mkarchiso can put `chaotic-keyring` into the live
+# environment, and both are idempotent:
 #
-# A failure is a warning and not an error: an ISO without them still installs a
-# complete system, falling back to building from the AUR at install time. It is
-# slower and needs the network, but it is not broken.
+#   - the host's pacman keyring has to trust Chaotic's signing key. Without it
+#     the packages below fail signature verification, which surfaces as "invalid
+#     or corrupted package" and names nothing about a key.
+#   - the host needs `chaotic-mirrorlist`, because the `[chaotic-aur]` section
+#     in iso/pacman.conf includes a path that mkarchiso resolves on the **host**,
+#     not inside the profile.
 #
-# Called directly, not through `as_builder`: the script installs build
-# dependencies and then drops to a normal user for makepkg itself. Going through
-# `as_builder` would leave it unprivileged, and its own sudo — from inside
-# `sudo -u`, with no terminal — fails outright instead of prompting.
-step "Paquets AUR préconstruits"
-readonly AUR_STAGE="${ROOT}/.build/aur-packages"
-if "${ROOT}/scripts/build-aur-packages.sh" "$AUR_STAGE"; then
-  echo "  $(ls -1 "${AUR_STAGE}"/*.pkg.tar.zst 2>/dev/null | wc -l) paquets prêts"
+# The key is fetched by its full identifier from a keyserver — that is the
+# official bootstrap, and the only step that trusts anything on the strength of
+# an identifier rather than a signature. Everything after it is verified against
+# the key. See installer/core/src/chaotic.rs for what the repository is and what
+# relying on it costs.
+step "Dépôt Chaotic-AUR (hôte)"
+
+readonly CHAOTIC_KEY="3056513887B78AEB"
+
+# `pacman-key --list-keys` on the local keyring, not on the fetched one: what
+# matters is whether the *host* has already accepted the key.
+if pacman-key --list-keys "$CHAOTIC_KEY" >/dev/null 2>&1; then
+  echo "  clé $CHAOTIC_KEY déjà présente"
 else
-  echo "  avertissement : construction impossible — l'installation les compilera depuis l'AUR"
-  echo "                 (plus lent, et il faut le réseau ; voir installer/core/src/aur.rs)"
+  echo "  import de la clé $CHAOTIC_KEY"
+  pacman-key --recv-key "$CHAOTIC_KEY" --keyserver keyserver.ubuntu.com
+  # `--lsign-key` is the trust decision: it marks the key as locally signed, so
+  # packages from Chaotic verify without a prompt nobody can answer during a
+  # build.
+  pacman-key --lsign-key "$CHAOTIC_KEY"
+fi
+
+if pacman -Qq chaotic-mirrorlist >/dev/null 2>&1; then
+  echo "  chaotic-mirrorlist déjà installé"
+else
+  echo "  installation de chaotic-keyring et chaotic-mirrorlist"
+  # Fetched by URL rather than by repository name: the repository cannot be used
+  # until these two are installed, which is the chicken-and-egg the official
+  # instructions work around exactly this way.
+  pacman -U --noconfirm --needed \
+    'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' \
+    'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'
 fi
 
 step "Assemblage du profil"
@@ -135,17 +157,6 @@ mkdir -p "$ASSEMBLED"
 cp -a "${PROFILE}/." "$ASSEMBLED/"
 install -Dm755 "$INSTALLER_BIN" "${ASSEMBLED}/airootfs/usr/bin/noos-installer"
 echo "  installateur -> airootfs/usr/bin/noos-installer"
-
-# The prebuilt AUR packages, into the medium's own filesystem.
-#
-# The path is not free: it is `aur::DIR` in the installer, which copies from
-# there into the target. The two have to agree, and nothing but this comment
-# says so.
-if compgen -G "${AUR_STAGE}/*.pkg.tar.zst" > /dev/null; then
-  mkdir -p "${ASSEMBLED}/airootfs/var/cache/noos-aur"
-  cp -a "${AUR_STAGE}"/*.pkg.tar.zst "${ASSEMBLED}/airootfs/var/cache/noos-aur/"
-  echo "  $(ls -1 "${ASSEMBLED}/airootfs/var/cache/noos-aur" | wc -l) paquets AUR -> airootfs/var/cache/noos-aur"
-fi
 
 step "Construction de l'ISO"
 mkdir -p "$OUT_DIR"
@@ -417,23 +428,25 @@ else
   die "l'entrée de démarrage ne contient pas 'splash' : pas d'écran de démarrage"
 fi
 
-# The prebuilt AUR packages, when this build produced any.
+# The repository keyring, on the medium.
 #
-# Checked on the finished squashfs rather than on the staging directory: the
-# installer looks for them at one exact path, and packages that reached the
-# profile but not the image would stay invisible until an installation tried to
-# use them — the failure mode this whole project keeps meeting.
-if [[ -d "${ASSEMBLED}/airootfs/var/cache/noos-aur" ]]; then
-  STAGED="$(ls -1 "${ASSEMBLED}/airootfs/var/cache/noos-aur" 2>/dev/null | grep -c '\.pkg\.tar\.zst' || true)"
-  IN_IMAGE="$(
-    unsquashfs -l "$VERIFY_DIR/airootfs.sfs" var/cache/noos-aur 2>/dev/null \
-      | grep -c '\.pkg\.tar\.zst' || true
-  )"
-  if [[ "$STAGED" -gt 0 && "$IN_IMAGE" -ge "$STAGED" ]]; then
-    check "paquets AUR embarqués" "$IN_IMAGE"
-  else
-    die "$STAGED paquets préparés, $IN_IMAGE dans l'ISO : l'installateur ne les trouvera pas"
-  fi
+# This is the link the whole Chaotic-AUR setup rests on: the live medium carries
+# `chaotic-keyring`, its `pacman-key --populate` imports the key, and `pacstrap`
+# copies that keyring into the target — which is what lets the target's first
+# `pacman -Sy` verify anything Chaotic serves. Lose the package and the
+# installation fails much later, on a signature error naming no cause.
+if unsquashfs -l "$VERIFY_DIR/airootfs.sfs" \
+     usr/share/pacman/keyrings/chaotic.gpg 2>/dev/null | grep -q chaotic.gpg; then
+  check "trousseau Chaotic sur le média" "oui"
+else
+  die "chaotic-keyring est absent : la cible ne pourrait pas vérifier le dépôt Chaotic-AUR"
+fi
+
+if unsquashfs -l "$VERIFY_DIR/airootfs.sfs" \
+     etc/pacman.d/chaotic-mirrorlist 2>/dev/null | grep -q chaotic-mirrorlist; then
+  check "liste de miroirs Chaotic" "oui"
+else
+  die "chaotic-mirrorlist est absent : l'installateur ne pourrait pas copier la liste dans la cible"
 fi
 
 cat <<EOF

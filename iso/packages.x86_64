@@ -111,3 +111,21 @@ tmux
 # Lets the host ask the VM for its address during install testing.
 
 qemu-guest-agent
+
+## Chaotic-AUR ----------------------------------------------------------------
+# The repository's own keyring and mirror list, carried by the live medium so
+# the *target* can use the repository from its first pacman call:
+#
+#   - `chaotic-keyring` puts the signing key in /usr/share/pacman/keyrings,
+#     which the live `pacman-key --populate` imports along with Arch's — and
+#     `pacstrap` then copies that keyring into the target.
+#   - `chaotic-mirrorlist` provides the file `[chaotic-aur]` includes. The
+#     installer copies it into the target before writing that section, because
+#     pacman cannot fetch a package from a repository whose mirror list it
+#     cannot read yet.
+#
+# The packages themselves are installed during the installation, not here: the
+# live medium has no use for a bootloader integration.
+
+chaotic-keyring
+chaotic-mirrorlist

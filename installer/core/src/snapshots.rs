@@ -69,10 +69,11 @@ pub const REQUIRED_EXTRA_PACKAGES: &[&str] = &["inotify-tools"];
 
 /// AUR packages that make up the snapshot chain.
 ///
-/// [`crate::aur::PACKAGES`] is the list that matters now: these two are built
-/// when the ISO is built and ship on the medium, so they are named there with
-/// everything else the image carries prebuilt. The test below keeps the two
-/// from drifting apart.
+/// Named here because they are what the whole design rests on, and listed in
+/// [`crate::install`] as taken from Chaotic-AUR. Both build a GraalVM native
+/// image, which is why they cannot simply be compiled on the target — see
+/// [`crate::chaotic`]. The test in that module keeps the two lists from
+/// drifting apart.
 pub const SNAPSHOT_CHAIN_PACKAGES: &[&str] = &["limine-mkinitcpio-hook", "limine-snapper-sync"];
 
 /// Renders `/etc/limine-snapper-sync.conf`.
@@ -194,18 +195,16 @@ mod tests {
     }
 
     #[test]
-    fn the_snapshot_chain_is_what_the_image_ships() {
-        // These two are the point of the distribution, and they are precisely
-        // the packages that cannot be built during installation: both compile
-        // a GraalVM native image. If one of them ever dropped out of
-        // `aur::PACKAGES` the installation would still report success, without
-        // a snapshot menu anywhere.
-        for package in SNAPSHOT_CHAIN_PACKAGES {
-            assert!(
-                crate::aur::PACKAGES.contains(package),
-                "{package} doit être préconstruit et embarqué sur le média"
-            );
-        }
+    fn the_snapshot_chain_is_the_two_packages_that_cannot_be_compiled() {
+        // These are the two that build a GraalVM native image, which is why
+        // they come from Chaotic-AUR instead of being built on the target.
+        // Renaming one of them here without renaming it upstream would leave
+        // the installation reporting success with no snapshot menu anywhere.
+        assert_eq!(
+            SNAPSHOT_CHAIN_PACKAGES,
+            &["limine-mkinitcpio-hook", "limine-snapper-sync"]
+        );
+        assert!(SNAPSHOT_CHAIN_PACKAGES.contains(&"limine-snapper-sync"));
     }
 
     #[test]
