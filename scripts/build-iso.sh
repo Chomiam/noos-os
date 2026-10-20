@@ -420,12 +420,12 @@ default_selection "noos-os live"
 
 # rEFInd scans every disk it can read, not just the medium it was booted from,
 # so on a machine that already has noos-os installed the menu fills with that
-# system's kernels and bootloaders — and one of them, a kernel with no `root=`
+# system's kernels and bootloaders — and one of them, a kernel with no \`root=\`
 # of its own, sits at the top and gets picked. That is what happened on the
 # first boot of this medium: it tried the *installed* system's kernel and
 # dropped into an emergency shell, which reads as the live medium being broken.
 #
-# `NOOS-ESP` is this distribution's own ESP label, so on a live installer this
+# \`NOOS-ESP\` is this distribution's own ESP label, so on a live installer this
 # hides what we put there ourselves. A machine with Windows or another Linux is
 # left visible: being able to reach an existing system from the medium is a
 # rescue worth keeping, and those entries are labelled for what they are.
@@ -444,10 +444,10 @@ menuentry "noos-os live" {
     volume "$ISO_LABEL"
     loader /noos/boot/x86_64/vmlinuz-linux
     initrd /noos/boot/x86_64/initramfs-linux.img
-    # Quoted, and it is not cosmetic: rEFInd reads a bare `options` value as a
-    # single token, so only `archisobasedir=noos` arrived and `archisolabel`
+    # Quoted, and it is not cosmetic: rEFInd reads a bare \`options\` value as a
+    # single token, so only \`archisobasedir=noos\` arrived and \`archisolabel\`
     # never reached the kernel. The archiso hook then had no device to mount —
-    # it reported `Mounting '' to /run/archiso/bootmnt` and gave up after 30
+    # it reported \`Mounting '' to /run/archiso/bootmnt\` and gave up after 30
     # seconds. The rEFInd sample config quotes this line for the same reason.
     options "archisobasedir=noos archisolabel=$ISO_LABEL quiet splash"
 }
@@ -819,7 +819,9 @@ done
 check "thème rEFInd sur le média" "4 images"
 
 # Secure Boot verification on the built artifact:
-#   1. BOOTx64.EFI and mmx64.efi carry Microsoft's UEFI CA signature (shim-signed)
+#   1. BOOTx64.EFI carries Microsoft's UEFI CA signature (shim-signed), and
+#      mmx64.efi carries the vendor signature embedded in shimx64.efi's
+#      .vendor_cert section (Fedora / Red Hat Secure Boot CA in shim-signed)
 #   2. grubx64.efi (systemd-boot), refind_x64.efi, iso9660_x64.efi and the live
 #      kernel vmlinuz-linux all pass `sbverify` against the MOK certificate
 #   3. The DER certificate `noos-mok.cer` is reachable at the ISO root and on
@@ -831,10 +833,10 @@ else
   die "BOOTx64.EFI ne porte pas la signature UEFI Microsoft (shim-signed)"
 fi
 
-if sbverify --list "${EFI_CHECK_DIR}/mmx64.efi" 2>/dev/null | grep -qi "Microsoft"; then
-  check "MokManager signé par Microsoft (mmx64.efi)" "oui"
+if sbverify --list "${EFI_CHECK_DIR}/mmx64.efi" 2>/dev/null | grep -Eqi "Fedora|Red Hat|Microsoft"; then
+  check "MokManager signé (mmx64.efi)" "oui"
 else
-  die "mmx64.efi ne porte pas la signature UEFI Microsoft"
+  die "mmx64.efi ne porte pas la signature vendeur attendue par shimx64.efi"
 fi
 
 for signed_efi in grubx64.efi refind_x64.efi iso9660_x64.efi; do
