@@ -75,7 +75,7 @@ jobs:
           restore-keys: bun-
 
       - name: Run unit tests
-        run: cargo test --manifest-path installer/Cargo.toml
+        run: cargo test --manifest-path installer/core/Cargo.toml
 
       - name: Build the ISO
         # No sudo: the container runs as root, and the script detects CI and

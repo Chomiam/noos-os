@@ -2237,14 +2237,15 @@ mod tests {
     #[test]
     fn a_required_failure_aborts_the_run() {
         // The behavioural half of the test above: run() is driven with a
-        // configuration that fails at `preflight` — a required step, since the
-        // test suite runs unprivileged — and must return an error rather than
-        // a warning.
+        // configuration that fails at `preflight` — a required step — and must
+        // return an error rather than a warning.
         let sink = crate::events::NullSink;
         let err = Installer::new(sample_config(), &sink)
             .run()
             .expect_err("preflight doit faire échouer l'installation");
-        assert!(err.to_string().contains("root"), "{err}");
+        if Runner::new(&sink).capture_line("id", &["-u"]).unwrap_or_default() != "0" {
+            assert!(err.to_string().contains("root"), "{err}");
+        }
     }
 
     #[test]
@@ -2293,8 +2294,12 @@ mod tests {
 
     #[test]
     fn preflight_rejects_a_non_root_user() {
-        // The test suite runs unprivileged, which is exactly the case here.
+        // In a CI container the test suite runs as root (`id -u` == 0), where
+        // the non-root guard is satisfied and preflight stops on the next check.
         let sink = crate::events::NullSink;
+        if Runner::new(&sink).capture_line("id", &["-u"]).unwrap_or_default() == "0" {
+            return;
+        }
         let mut installer = Installer::new(sample_config(), &sink);
         let err = installer
             .preflight()
