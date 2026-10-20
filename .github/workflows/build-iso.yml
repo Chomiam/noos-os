@@ -33,7 +33,7 @@ jobs:
       options: --privileged
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the build toolchain
         run: |
@@ -58,7 +58,7 @@ jobs:
             libxkbcommon xorgproto
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -68,7 +68,7 @@ jobs:
           restore-keys: cargo-
 
       - name: Cache bun
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-${{ hashFiles('installer/bun.lock') }}
@@ -99,7 +99,7 @@ jobs:
           fi
 
       - name: Upload the ISO as a build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: noos-os-iso
           path: |
@@ -113,7 +113,7 @@ jobs:
         # Only on a tag, and only when the size check passed — a release
         # without its ISO is worse than no release.
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             ${{ steps.size.outputs.iso }}
