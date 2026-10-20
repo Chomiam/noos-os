@@ -49,12 +49,15 @@ nvme-cli
 hdparm
 
 ## Bootloader tooling --------------------------------------------------------
-# `efibootmgr`. The *target*'s bootloader is rEFInd, installed by pacstrap and
-# copied out of the target's own `/usr/share/refind` — the live medium has no
-# reason to carry it. What the live medium boots with is rEFInd's own copy,
-# staged into the EFI image by scripts/build-iso.sh, not a package here.
+# `efibootmgr`, `sbsigntools` and `openssl`. The *target*'s bootloader is rEFInd,
+# installed by pacstrap and copied out of the target's own `/usr/share/refind`
+# — the live medium has no reason to carry it. What the live medium boots with
+# is rEFInd's own copy, staged and signed into the EFI image by
+# scripts/build-iso.sh, not a package here.
 
 efibootmgr
+sbsigntools
+openssl
 
 # The UEFI shell, as the recovery path of last resort.
 #
@@ -140,8 +143,11 @@ qemu-guest-agent
 #     pacman cannot fetch a package from a repository whose mirror list it
 #     cannot read yet.
 #
-# The packages themselves are installed during the installation, not here: the
-# live medium has no use for a bootloader integration.
+# `shim-signed` is carried here as well as installed on the target: during the
+# ISO build `scripts/build-iso.sh` takes `shimx64.efi` and `mmx64.efi` out of
+# the pacstrap tree to populate the live EFI image, and at installation time the
+# live medium's copy serves as the offline fallback for the target's ESP.
 
 chaotic-keyring
 chaotic-mirrorlist
+shim-signed

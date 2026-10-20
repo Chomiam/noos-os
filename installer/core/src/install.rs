@@ -24,6 +24,7 @@ use crate::locale;
 use crate::mkinitcpio;
 use crate::powersave;
 use crate::refind;
+use crate::secureboot;
 use crate::services;
 use crate::snapshots;
 use crate::theme;
@@ -1091,6 +1092,8 @@ impl<'a> Installer<'a> {
             0o644,
         )?;
 
+        self.configure_secureboot()?;
+
         // The NVRAM entry, which is a *convenience*, not the boot path.
         //
         // Deliberately not fatal. On real hardware `efibootmgr --create` fails
@@ -1122,6 +1125,86 @@ impl<'a> Installer<'a> {
         }
 
         self.note(format!("rEFInd installé ({icons} images de thème)"));
+        Ok(())
+    }
+
+    /// Generates a local MOK keypair, signs rEFInd and the kernel, and installs
+    /// the pacman hook that keeps `/boot` signed across upgrades.
+    fn configure_secureboot(&mut self) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        // If the target lacks shim-signed (e.g. Chaotic-AUR was unreachable),
+        // fall back to the live medium's own copy so the ESP still gets the
+        // Microsoft-signed first-stage loader and MokManager.
+        let target_shim_dir = format!("{MOUNT_ROOT}{}", secureboot::SHIM_SOURCE_DIR);
+        exec::make_dir(&target_shim_dir, 0o755)?;
+        for file in [secureboot::SHIM_EFI, secureboot::MOK_MANAGER_EFI] {
+            let dst = format!("{target_shim_dir}/{file}");
+            let src = format!("{}/{file}", secureboot::SHIM_SOURCE_DIR);
+            if !Path::new(&dst).exists() && Path::new(&src).exists() {
+                std::fs::copy(&src, &dst).map_err(|e| Error::io(&src, e))?;
+            }
+        }
+
+        let keys_dir = format!("{MOUNT_ROOT}{}", secureboot::KEYS_DIR);
+        exec::make_dir(&keys_dir, 0o700)?;
+
+        self.runner.stream_in(
+            Some(MOUNT_ROOT),
+            "openssl",
+            &[
+                "req",
+                "-new",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-days",
+                "3650",
+                "-subj",
+                secureboot::MOK_SUBJECT,
+                "-keyout",
+                secureboot::MOK_KEY_PATH,
+                "-out",
+                secureboot::MOK_CRT_PATH,
+            ],
+        )?;
+        self.runner.stream_in(
+            Some(MOUNT_ROOT),
+            "openssl",
+            &[
+                "x509",
+                "-in",
+                secureboot::MOK_CRT_PATH,
+                "-outform",
+                "DER",
+                "-out",
+                secureboot::MOK_CER_PATH,
+            ],
+        )?;
+
+        let key_host_path = format!("{MOUNT_ROOT}{}", secureboot::MOK_KEY_PATH);
+        std::fs::set_permissions(&key_host_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| Error::io(&key_host_path, e))?;
+
+        exec::make_dir(format!("{MOUNT_ROOT}/usr/local/bin"), 0o755)?;
+        exec::write_file(
+            format!("{MOUNT_ROOT}{}", secureboot::SIGN_SCRIPT_PATH),
+            secureboot::SIGN_SCRIPT,
+            0o755,
+        )?;
+
+        exec::make_dir(format!("{MOUNT_ROOT}{}", secureboot::PACMAN_HOOK_DIR), 0o755)?;
+        exec::write_file(
+            format!("{MOUNT_ROOT}{}", secureboot::PACMAN_HOOK_PATH),
+            secureboot::PACMAN_HOOK,
+            0o644,
+        )?;
+
+        self.runner
+            .stream_in(Some(MOUNT_ROOT), secureboot::SIGN_SCRIPT_PATH, &[])?;
+
+        self.note("Secure Boot configuré (shim-signed + clé MOK locale + hook pacman)");
         Ok(())
     }
 
@@ -1406,6 +1489,7 @@ impl<'a> Installer<'a> {
         self.require_target()?;
 
         let mut wanted: Vec<&str> = snapshots::SNAPSHOT_CHAIN_PACKAGES.to_vec();
+        wanted.extend_from_slice(secureboot::CHAOTIC_PACKAGES);
         wanted.push(AUR_HELPER);
         if self.config.install_shelly {
             wanted.push("shelly");
@@ -1922,6 +2006,9 @@ const CHAOTIC_PACKAGES: &[&str] = &[
     // limine's tooling needed; it comes from here so that every AUR package
     // follows one path.
     "refind-btrfs",
+    // Microsoft-signed first-stage UEFI loader (`shimx64.efi`) and MokManager
+    // (`mmx64.efi`) for Secure Boot.
+    "shim-signed",
     // The AUR helper. From Chaotic it is a binary like any other; the fallback
     // path still knows how to build `yay-bin` if it is ever missing.
     "yay",
@@ -1957,6 +2044,9 @@ pub fn package_list(config: &InstallConfig, codec: &CodecPlan) -> Vec<String> {
     // script that turns Energy Efficient Ethernet off calls it by absolute
     // path — without the package it would fail silently on every interface.
     extend_str(&mut packages, powersave::REQUIRED_PACKAGES);
+
+    // Secure Boot signing tools (`sbsigntools` and `openssl`).
+    extend_str(&mut packages, secureboot::REQUIRED_PACKAGES);
 
     // Flatpak, AppImage and Java.
     extend_str(&mut packages, APPLICATION_RUNTIMES);
@@ -2313,6 +2403,23 @@ mod tests {
         // the repository is enabled. Losing one from this list would leave the
         // installation reporting success with no snapshot menu anywhere.
         for package in snapshots::SNAPSHOT_CHAIN_PACKAGES {
+            assert!(
+                CHAOTIC_PACKAGES.contains(package),
+                "{package} doit venir de Chaotic-AUR"
+            );
+        }
+    }
+
+    #[test]
+    fn secureboot_packages_are_installed() {
+        let packages = package_list(&sample_config(), &CodecPlan::default());
+        for package in secureboot::REQUIRED_PACKAGES {
+            assert!(
+                packages.contains(&(*package).to_string()),
+                "{package} est requis pour la signature Secure Boot"
+            );
+        }
+        for package in secureboot::CHAOTIC_PACKAGES {
             assert!(
                 CHAOTIC_PACKAGES.contains(package),
                 "{package} doit venir de Chaotic-AUR"

@@ -11,7 +11,7 @@ use noos_core::config::InstallConfig;
 use noos_core::events::StdoutSink;
 use noos_core::exec::Runner;
 use noos_core::install::Installer;
-use noos_core::{audio, btrfs, gpu, keyboard, layout, mkinitcpio, refind};
+use noos_core::{audio, btrfs, gpu, keyboard, layout, mkinitcpio, refind, secureboot};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -196,6 +196,11 @@ fn cmd_check(args: &[String]) -> ExitCode {
     println!(
         "===== themes/noos/theme.conf =====\n{}",
         refind::theme_conf()
+    );
+    println!(
+        "===== {} =====\n{}",
+        secureboot::PACMAN_HOOK_PATH,
+        secureboot::PACMAN_HOOK
     );
     println!(
         "===== /etc/mkinitcpio.conf =====\n{}",

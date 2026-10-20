@@ -225,27 +225,106 @@ mkarchiso -v -w "$WORK_DIR" -o "$OUT_DIR" "$ASSEMBLED"
 # The markers are mkarchiso's `_run_once` files. Fewer than the ones removed
 # here and the image keeps its old contents — which is the stale-ISO trap this
 # script fights everywhere else, now used deliberately.
-step "rEFInd dans l'image EFI"
+step "rEFInd et Secure Boot dans l'image EFI"
 
 readonly ISO_TREE="${WORK_DIR}/iso"
 readonly REFIND_SRC="${WORK_DIR}/refind-src"
+readonly PACSTRAP_ROOT="${WORK_DIR}/x86_64/airootfs"
+readonly BOOT_STAGE_DIR="${WORK_DIR}/x86_64/boot"
+readonly SHIM_DIR="${PACSTRAP_ROOT}/usr/share/shim-signed"
+readonly SB_DIR="${WORK_DIR}/sb-keys"
 
 [[ -d $ISO_TREE ]] || die "mkarchiso n'a pas laissé d'arbre ISO dans ${WORK_DIR}"
 
-# The rEFInd binaries come from the package on the build host, never from a copy
-# in git: a committed `.efi` would be a copy of somebody else's binary that no
-# review can check, and it would drift from the packaged version.
-if ! pacman -Qq refind >/dev/null 2>&1; then
-  echo "  installation de refind sur l'hôte"
-  pacman -S --needed --noconfirm refind
-fi
+# The rEFInd binaries and signing tools come from packages on the build host,
+# never from a copy in git: a committed `.efi` would be a copy of somebody
+# else's binary that no review can check, and it would drift from the packaged
+# version.
+for host_pkg in refind sbsigntools openssl; do
+  if ! pacman -Qq "$host_pkg" >/dev/null 2>&1; then
+    echo "  installation de $host_pkg sur l'hôte"
+    pacman -S --needed --noconfirm "$host_pkg"
+  fi
+done
+
+[[ -f "${SHIM_DIR}/shimx64.efi" && -f "${SHIM_DIR}/mmx64.efi" ]] \
+  || die "shim-signed introuvable dans ${SHIM_DIR} — vérifie iso/packages.x86_64"
+
+# Ephemeral Machine Owner Key (MOK) for this ISO build.
+#
+# The private key stays inside ${WORK_DIR}/sb-keys and never enters the ISO;
+# only the public DER certificate (`noos-mok.cer`) is shipped on the EFI image
+# and at the ISO root so MokManager (`mmx64.efi`) can enroll it via "Enroll key
+# from disk" on a machine with Secure Boot enabled.
+rm -rf "$SB_DIR"
+install -d -m 0700 "$SB_DIR"
+openssl req -new -x509 -newkey rsa:2048 -nodes -days 3650 \
+  -subj "/CN=noos-os Live Secure Boot MOK/" \
+  -keyout "${SB_DIR}/mok.key" \
+  -out "${SB_DIR}/mok.crt" 2>/dev/null
+openssl x509 -in "${SB_DIR}/mok.crt" -outform DER -out "${SB_DIR}/noos-mok.cer"
+
+sb_sign_file() {
+  local src="$1"
+  local dst="$2"
+  local tmp="${dst}.tmp"
+  sbsign --key "${SB_DIR}/mok.key" --cert "${SB_DIR}/mok.crt" \
+    --output "$tmp" "$src" 2>&1 \
+    | grep -v "gaps between PE/COFF sections" || true
+  [[ -s "$tmp" ]] || die "échec de la signature Secure Boot de $src"
+  mv -f "$tmp" "$dst"
+  sbverify --cert "${SB_DIR}/mok.crt" "$dst" >/dev/null 2>&1 \
+    || die "vérification sbverify échouée sur $dst"
+}
 
 rm -rf "$REFIND_SRC"
-install -d -m 0755 "${ISO_TREE}/EFI/refind" \
+install -d -m 0755 "${ISO_TREE}/EFI/BOOT" \
+  "${ISO_TREE}/EFI/refind" \
+  "${ISO_TREE}/EFI/refind/keys" \
   "${ISO_TREE}/EFI/refind/drivers_x64" \
   "${ISO_TREE}/EFI/refind/themes/noos"
 
-# rEFInd's runtime files, copied whole.
+# Stage the Secure Boot hand-off in /EFI/BOOT:
+#
+#   BOOTx64.EFI (shimx64.efi, Microsoft-signed)
+#     -> grubx64.efi (systemd-bootx64.efi, MOK-signed)
+#       -> /EFI/refind/refind_x64.efi (MOK-signed)
+#         -> /noos/boot/x86_64/vmlinuz-linux (MOK-signed)
+#
+# mkarchiso's `_make_common_bootmode_uefi.systemd-boot_copy_files` copies
+# `${PACSTRAP_ROOT}/usr/lib/systemd/boot/efi/systemd-bootx64.efi` onto
+# `${ISO_TREE}/EFI/BOOT/BOOTx64.EFI` on the second pass. So we sign the real
+# `systemd-bootx64.efi` into `grubx64.efi` first, then replace the source file
+# in `${PACSTRAP_ROOT}` with `shimx64.efi` (the squashfs was already built in
+# the first pass, so `airootfs.sfs` is untouched).
+readonly SDBOOT_SRC="${PACSTRAP_ROOT}/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
+[[ -f "$SDBOOT_SRC" ]] || die "systemd-bootx64.efi introuvable dans ${PACSTRAP_ROOT}"
+sb_sign_file "$SDBOOT_SRC" "${ISO_TREE}/EFI/BOOT/grubx64.efi"
+install -m 0644 "${SHIM_DIR}/mmx64.efi" "${ISO_TREE}/EFI/BOOT/mmx64.efi"
+install -m 0644 "${SHIM_DIR}/shimx64.efi" "$SDBOOT_SRC"
+install -m 0644 "${SHIM_DIR}/shimx64.efi" "${ISO_TREE}/EFI/BOOT/BOOTx64.EFI"
+
+# Sign the UEFI shell in place before the second pass copies it to /shellx64.efi.
+readonly SHELL_SRC="${PACSTRAP_ROOT}/usr/share/edk2-shell/x64/Shell_Full.efi"
+if [[ -f "$SHELL_SRC" ]]; then
+  sb_sign_file "$SHELL_SRC" "$SHELL_SRC"
+fi
+
+# Sign the live kernel in the staging directory that `_make_boot_on_iso9660`
+# and `_make_boot_on_fat` both read from on the second pass.
+for kernel in "${BOOT_STAGE_DIR}"/vmlinuz-*; do
+  [[ -f "$kernel" ]] || die "aucun noyau trouvé dans ${BOOT_STAGE_DIR}"
+  sb_sign_file "$kernel" "$kernel"
+done
+
+# Public MOK certificate, placed where MokManager's "Enroll key from disk"
+# finds it immediately without a password prompt.
+install -m 0644 "${SB_DIR}/noos-mok.cer" "${ISO_TREE}/noos-mok.cer"
+install -m 0644 "${SB_DIR}/noos-mok.cer" "${ISO_TREE}/EFI/noos-mok.cer"
+install -m 0644 "${SB_DIR}/noos-mok.cer" "${ISO_TREE}/EFI/BOOT/noos-mok.cer"
+install -m 0644 "${SB_DIR}/noos-mok.cer" "${ISO_TREE}/EFI/refind/keys/noos-mok.cer"
+
+# rEFInd's runtime files, copied whole and signed.
 #
 # **`icons/` is not decoration — without it rEFInd refuses to draw.** Its own
 # manual, twice over:
@@ -264,17 +343,21 @@ install -d -m 0755 "${ISO_TREE}/EFI/refind/icons" \
   "${ISO_TREE}/EFI/refind/fonts" \
   "${ISO_TREE}/EFI/refind/drivers_x64"
 
-install -m 0644 /usr/share/refind/refind_x64.efi "${ISO_TREE}/EFI/refind/"
+sb_sign_file /usr/share/refind/refind_x64.efi "${ISO_TREE}/EFI/refind/refind_x64.efi"
+install -m 0644 "${SHIM_DIR}/mmx64.efi" "${ISO_TREE}/EFI/refind/mmx64.efi"
 cp -a /usr/share/refind/icons/. "${ISO_TREE}/EFI/refind/icons/"
 cp -a /usr/share/refind/fonts/. "${ISO_TREE}/EFI/refind/fonts/"
 
-# Every driver the package carries, and not just the one this medium needs.
+# Every driver the package carries, signed with our MOK key.
 #
 # rEFInd inherits the firmware's filesystems, which on a UEFI PC is FAT and
 # ISO9660, so `iso9660_x64.efi` is what makes the medium's own volume readable.
 # The rest cost a fraction of a megabyte and are what let a machine see a disk
 # it otherwise could not — the point of a live medium.
-cp -a /usr/share/refind/drivers_x64/. "${ISO_TREE}/EFI/refind/drivers_x64/"
+for driver in /usr/share/refind/drivers_x64/*.efi; do
+  [[ -f "$driver" ]] || continue
+  sb_sign_file "$driver" "${ISO_TREE}/EFI/refind/drivers_x64/$(basename "$driver")"
+done
 
 # The theme, from the one committed copy.
 install -m 0644 "${PROFILE}/airootfs/usr/share/noos/refind-theme/"*.png \
@@ -348,10 +431,11 @@ default_selection "noos-os live"
 # rescue worth keeping, and those entries are labelled for what they are.
 dont_scan_volumes "NOOS-ESP"
 
-# Two EFI binaries that live in the image we were booted from. The systemd-boot
-# binary we chainload *from* would loop straight back here; the shell is already
-# offered by rEFInd as its own tool, so the auto-detected copy is a duplicate.
-dont_scan_files bootx64.efi,shellx64.efi
+# Helper EFI binaries that live in the image we were booted from. The shim and
+# systemd-boot binaries we chainload *from* would loop straight back here;
+# MokManager and the shell are already offered by rEFInd in its tool row, so the
+# auto-detected copies would be duplicates.
+dont_scan_files bootx64.efi,grubx64.efi,mmx64.efi,shimx64.efi,systemd-bootx64.efi,shellx64.efi
 
 include themes/noos/theme.conf
 
@@ -422,7 +506,14 @@ readonly EFI_CHECK_DIR="${WORK_DIR}/efi-check"
 mkdir -p "$EFI_CHECK_DIR"
 
 readonly EFI_FILES=(
+  /EFI/BOOT/BOOTx64.EFI
+  /EFI/BOOT/grubx64.efi
+  /EFI/BOOT/mmx64.efi
+  /EFI/BOOT/noos-mok.cer
+  /EFI/noos-mok.cer
   /EFI/refind/refind_x64.efi
+  /EFI/refind/mmx64.efi
+  /EFI/refind/keys/noos-mok.cer
   /EFI/refind/refind.conf
   /EFI/refind/themes/noos/theme.conf
   /EFI/refind/themes/noos/background.png
@@ -726,6 +817,53 @@ for image in background.png os_noos.png selection_big.png selection_small.png; d
     | grep -q "$image" || die "le thème rEFInd n'a pas $image dans l'ISO"
 done
 check "thème rEFInd sur le média" "4 images"
+
+# Secure Boot verification on the built artifact:
+#   1. BOOTx64.EFI and mmx64.efi carry Microsoft's UEFI CA signature (shim-signed)
+#   2. grubx64.efi (systemd-boot), refind_x64.efi, iso9660_x64.efi and the live
+#      kernel vmlinuz-linux all pass `sbverify` against the MOK certificate
+#   3. The DER certificate `noos-mok.cer` is reachable at the ISO root and on
+#      the EFI image for MokManager's "Enroll key from disk"
+#   4. The live squashfs carries `shim-signed` and `sbsign` for the target
+if sbverify --list "${EFI_CHECK_DIR}/BOOTx64.EFI" 2>/dev/null | grep -qi "Microsoft"; then
+  check "shim signé par Microsoft (BOOTx64.EFI)" "oui"
+else
+  die "BOOTx64.EFI ne porte pas la signature UEFI Microsoft (shim-signed)"
+fi
+
+if sbverify --list "${EFI_CHECK_DIR}/mmx64.efi" 2>/dev/null | grep -qi "Microsoft"; then
+  check "MokManager signé par Microsoft (mmx64.efi)" "oui"
+else
+  die "mmx64.efi ne porte pas la signature UEFI Microsoft"
+fi
+
+for signed_efi in grubx64.efi refind_x64.efi iso9660_x64.efi; do
+  sbverify --cert "${SB_DIR}/mok.crt" "${EFI_CHECK_DIR}/${signed_efi}" >/dev/null 2>&1 \
+    || die "${signed_efi} dans l'image EFI n'est pas signé avec la clé MOK du build"
+done
+check "binaires EFI signés MOK" "grubx64 + rEFInd + pilotes"
+
+xorriso -osirrox on -indev "$ISO" \
+  -extract "/noos/boot/x86_64/vmlinuz-linux" "$VERIFY_DIR/vmlinuz-linux" 2>/dev/null \
+  || die "vmlinuz-linux introuvable dans l'ISO"
+if sbverify --cert "${SB_DIR}/mok.crt" "$VERIFY_DIR/vmlinuz-linux" >/dev/null 2>&1; then
+  check "noyau live signé MOK (vmlinuz-linux)" "oui"
+else
+  die "le noyau live vmlinuz-linux n'est pas signé pour Secure Boot"
+fi
+
+xorriso -osirrox on -indev "$ISO" \
+  -extract "/noos-mok.cer" "$VERIFY_DIR/noos-mok.cer" 2>/dev/null \
+  && [[ -s "$VERIFY_DIR/noos-mok.cer" ]] \
+  || die "certificat MOK /noos-mok.cer absent de l'ISO"
+check "certificat MOK sur le média" "/noos-mok.cer + EFI"
+
+if unsquashfs -l "$VERIFY_DIR/airootfs.sfs" usr/share/shim-signed/shimx64.efi 2>/dev/null | grep -q shimx64.efi \
+   && unsquashfs -l "$VERIFY_DIR/airootfs.sfs" usr/bin/sbsign 2>/dev/null | grep -q sbsign; then
+  check "outils Secure Boot pour la cible" "shim-signed + sbsigntools"
+else
+  die "shim-signed ou sbsigntools manque dans le squashfs live"
+fi
 
 cat <<EOF
 

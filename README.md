@@ -126,6 +126,33 @@ Trois contraintes non négociables, chacune expliquée dans le code :
   swapfile actif ne peut pas être snapshoté : un swapfile dans `@` bloquerait
   toute la chaîne de rollback.
 
+## Secure Boot
+
+L'ISO live comme le système installé démarrent sur une machine dont le **Secure
+Boot est actif d'usine**, sans passer par le BIOS pour effacer les clés de la
+carte mère (*Setup Mode*).
+
+La chaîne repose sur `shim-signed` (signé par *Microsoft Corporation UEFI CA
+2011*) et sur une clé **MOK** (*Machine Owner Key*) locale :
+
+1. **Sur le média live**, `scripts/build-iso.sh` génère une paire de clés MOK
+   éphémère, place `shimx64.efi` en `/EFI/BOOT/BOOTx64.EFI` avec `mmx64.efi` à
+   ses côtés, et signe `grubx64.efi` (`systemd-boot`), `refind_x64.efi`, ses
+   pilotes (`iso9660_x64.efi`), le shell UEFI et le noyau live `vmlinuz-linux`.
+   La clé privée est détruite à la fin du build ; seul le certificat public DER
+   (`noos-mok.cer`) est embarqué à la racine de l'ESP et de l'ISO.
+2. **Sur le système installé**, l'installateur génère une paire de clés RSA-2048
+   propre à la machine dans `/etc/refind.d/keys/` (`0700`), copie le certificat
+   public en `/boot/noos-mok.cer`, signe rEFInd et le noyau avec `sbsign`, et
+   installe le hook pacman `/etc/pacman.d/hooks/95-noos-secureboot.hook`
+   (`/usr/local/bin/noos-sb-sign`) pour que chaque `pacman -Syu` resigne
+   automatiquement le noyau après `mkinitcpio`.
+3. **Au premier démarrage sous Secure Boot**, `shimx64.efi` ouvre `mmx64.efi`
+   (*MokManager*) : choisir *Enroll key from disk* → `noos-mok.cer` → *Reboot*.
+   L'enrôlement par fichier sur l'ESP évite `mokutil --import` et son mot de
+   passe à ressaisir sur un clavier firmware en QWERTY. Voir
+   `installer/core/src/secureboot.rs`.
+
 ## Le dépôt Chaotic-AUR
 
 Trois paquets dont la distribution a besoin viennent de l'AUR, qui ne distribue
@@ -233,9 +260,9 @@ distribution, avant ceux de l'utilisateur, qui peut donc le surcharger.
 
 ```
 installer/
-  core/           moteur d'installation, sans dépendance Tauri — 215 tests
-    src/          layout, btrfs, refind, snapshots, chaotic, flatpak, kernel,
-                  keyboard, network, powersave, gpu, services, validate
+  core/           moteur d'installation, sans dépendance Tauri — 221 tests
+    src/          layout, btrfs, refind, secureboot, snapshots, chaotic, flatpak,
+                  kernel, keyboard, network, powersave, gpu, services, validate
     src/bin/      CLI : plan | gpu | check | install
   src-tauri/      l'application Tauri v2 (interface)
   src/            frontend React (9 écrans, FR/EN)

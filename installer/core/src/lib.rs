@@ -27,6 +27,7 @@ pub mod nvidia_devices;
 pub mod network;
 pub mod powersave;
 pub mod refind;
+pub mod secureboot;
 pub mod services;
 pub mod snapshots;
 pub mod theme;

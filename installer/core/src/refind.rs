@@ -19,9 +19,15 @@ pub const REFIND_DIR: &str = "EFI/refind";
 
 /// The binary the firmware's boot entry points at, relative to the ESP root.
 ///
+/// Points at `shimx64.efi` rather than `refind_x64.efi` directly: under Secure
+/// Boot the firmware only accepts Microsoft-signed binaries, and `shimx64.efi`
+/// then chains into `grubx64.efi` (our MOK-signed copy of `refind_x64.efi` in
+/// the same directory). With Secure Boot disabled `shimx64.efi` still chains
+/// transparently, so one NVRAM entry covers both states.
+///
 /// Backslashes because `efibootmgr` wants the EFI firmware's own path syntax,
 /// not a POSIX one.
-pub const EFI_LOADER_PATH: &str = "\\EFI\\refind\\refind_x64.efi";
+pub const EFI_LOADER_PATH: &str = "\\EFI\\refind\\shimx64.efi";
 
 /// The ESP, which is also rEFInd's own volume — so a stanza can name a kernel
 /// with a plain path and no `volume` token.
@@ -198,10 +204,10 @@ pub fn refind_conf(btrfs_uuid: &str, swap_uuid: Option<&str>, kernel: Kernel) ->
          # SCANFOR in installer/core/src/refind.rs.\n\
          scanfor {scanfor}\n\
          \n\
-         # The kernel this file declares below, and the systemd-boot binary the\n\
-         # live medium chains through. Both would otherwise be offered a second\n\
-         # time, by auto-detection.\n\
-         dont_scan_files bootx64.efi,{kernel}\n\
+         # The kernel this file declares below, and the Shim / fallback binaries\n\
+         # the Secure Boot chain uses. All of them would otherwise be offered a\n\
+         # second time, by auto-detection.\n\
+         dont_scan_files bootx64.efi,shimx64.efi,grubx64.efi,mmx64.efi,{kernel}\n\
          \n\
          include themes/{theme}/theme.conf\n\
          \n\
@@ -305,8 +311,13 @@ mod tests {
                 hidden.contains(kernel.image()),
                 "le noyau serait listé deux fois : {hidden}"
             );
-            // The live medium's chainload binary, same reason.
-            assert!(hidden.contains("bootx64.efi"));
+            // The fallback and Secure Boot chainload binaries, same reason.
+            for helper in ["bootx64.efi", "shimx64.efi", "grubx64.efi", "mmx64.efi"] {
+                assert!(
+                    hidden.contains(helper),
+                    "{helper} apparaîtrait comme entrée séparée : {hidden}"
+                );
+            }
         }
     }
 

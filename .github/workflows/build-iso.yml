@@ -53,6 +53,7 @@ jobs:
           pacman -S --noconfirm --needed \
             archiso base-devel git \
             rust bun \
+            sbsigntools openssl \
             pkgconf gtk3 webkit2gtk-4.1 libsoup3 librsvg \
             libxkbcommon xorgproto
 
@@ -72,6 +73,9 @@ jobs:
           path: ~/.bun/install/cache
           key: bun-${{ hashFiles('installer/bun.lock') }}
           restore-keys: bun-
+
+      - name: Run unit tests
+        run: cargo test --manifest-path installer/Cargo.toml
 
       - name: Build the ISO
         # No sudo: the container runs as root, and the script detects CI and
