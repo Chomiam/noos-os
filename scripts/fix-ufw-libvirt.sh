@@ -28,7 +28,7 @@ step() { printf '\n== %s ==\n' "$*"; }
 
 command -v ufw >/dev/null 2>&1 || die "ufw n'est pas installé"
 
-if ! systemctl is-active --quiet ufw; then
+if ! systemctl is-active --quiet ufw && ! ufw status 2>/dev/null | grep -q '^Status: active'; then
   die "ufw n'est pas actif : rien à corriger"
 fi
 
