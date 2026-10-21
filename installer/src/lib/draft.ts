@@ -33,8 +33,6 @@ export interface Draft {
   disk: string;
   swap: boolean;
   requireStrongPassword: boolean;
-  enableAur: boolean;
-  installShelly: boolean;
   nvidiaLegacy: NvidiaLegacy | null;
   firmware: Firmware;
   kernel: Kernel;
@@ -55,8 +53,6 @@ export const INITIAL_DRAFT: Draft = {
   disk: "",
   swap: true,
   requireStrongPassword: true,
-  enableAur: true,
-  installShelly: true,
   nvidiaLegacy: null,
   firmware: "uefi",
   kernel: "linux",
@@ -76,8 +72,6 @@ export function toInstallConfig(draft: Draft): InstallConfig {
     disk: draft.disk,
     swap: draft.swap,
     requireStrongPassword: draft.requireStrongPassword,
-    enableAur: draft.enableAur,
-    installShelly: draft.installShelly,
     firmware: draft.firmware,
     kernel: draft.kernel,
     nvidiaLegacy: draft.nvidiaLegacy,

@@ -1,46 +1,69 @@
-//! Wiring snapper, snap-pac and refind-btrfs together.
+//! Wiring `snapper`, `snap-pac`, `grub` and `grub-btrfs` together.
 //!
-//! The chain is: `snap-pac` creates a pre/post snapshot around every pacman
-//! transaction → snapper records it under the `root` config → `refind-btrfs`
-//! turns each one into a rEFInd boot stanza, with the same kernel the ESP
-//! already carries and a different root subvolume.
+//! The full snapshot lifecycle works across both `pacman` and AUR (`yay`,
+//! `noos-package-manager`, `makepkg -i`) transactions, as well as scheduled/boot snapshots:
 //!
-//! **Those stanzas roll back everything except the kernel.** With `/boot` on
-//! its own partition, the kernel is shared by every entry, so a snapshot cannot
-//! rescue a machine whose kernel upgrade broke the boot. `refind-btrfs` says so
-//! itself; limine's tooling avoided it by copying a kernel per snapshot onto the
-//! ESP, which is what the 8 GiB boot partition used to be for. That trade was
-//! made deliberately.
+//! 1. **Pre-transaction (`05-snap-pac-pre.hook` from `snap-pac`)**: before any
+//!    `pacman` or AUR (`pacman -U` / `pacman -S`) transaction modifies `/`,
+//!    `snap-pac` takes a `pre` snapshot of `@` under Snapper's `root` config,
+//!    recording the invoking command as its description.
+//! 2. **Kernel / GRUB upgrade (`96-noos-grub-mkconfig.hook`)**: whenever a
+//!    kernel (`usr/lib/modules/*/vmlinuz`), microcode (`boot/*-ucode.img`) or
+//!    `grub` / `grub-btrfs` / `os-prober` is installed, upgraded or removed,
+//!    `/boot/grub/grub.cfg` is regenerated after `mkinitcpio` (`90-`) and
+//!    Secure Boot signing (`95-`).
+//! 3. **Post-transaction (`zz-snap-pac-post.hook` from `snap-pac`)**: after the
+//!    transaction completes, `snap-pac` takes the paired `post` snapshot,
+//!    records the modified packages, and marks `important=yes` when a critical
+//!    package or full upgrade (`pacman -Syu` / `yay -Syu`) ran.
+//! 4. **Synchronous GRUB snapshot menu refresh (`zzz-noos-grub-btrfs.hook`)**:
+//!    ordered at `zzz-` so it runs right after `zz-snap-pac-post.hook`, it calls
+//!    [`UPDATE_SCRIPT_PATH`] (`/usr/local/bin/noos-grub-btrfs-update`), which
+//!    runs `/etc/grub.d/41_snapshots-btrfs` immediately so both `pre` and `post`
+//!    snapshots are already in `/boot/grub/grub-btrfs.cfg` before `pacman` or
+//!    `yay` returns.
+//! 5. **Background watcher (`grub-btrfsd.service`)**: watches `/.snapshots` via
+//!    `inotify-tools` and regenerates `/boot/grub/grub-btrfs.cfg` whenever
+//!    `snapper-boot.timer`, `snapper-timeline.timer`, `snapper-cleanup.timer` or
+//!    a manual `snapper` command creates or deletes a snapshot.
 
 /// Snapper config name. It must manage the subvolume mounted at `/`.
 pub const SNAPPER_CONFIG_NAME: &str = "root";
 
 /// Tells snapper to work without the system bus.
 ///
-/// Mandatory for every invocation from the installer. `snapper` reaches
-/// `snapperd` over D-Bus by default, and an `arch-chroot` has no bus — the
-/// call fails with `org.freedesktop.DBus.Error.ServiceUnknown`, which names
-/// the bus error rather than the cause.
-///
-/// The manual warns that a running `snapperd` will not learn about changes
-/// made this way. That is exactly right here: there is no daemon in the chroot
-/// to inform, and the configuration is written for the next boot.
+/// Mandatory for every invocation from the installer (`arch-chroot` has no
+/// running `dbus-daemon`).
 pub const NO_DBUS: &str = "--no-dbus";
 
-/// How many snapshots snapper keeps.
-///
-/// If it kept more than `refind-btrfs` exposes, every sync would log about the
-/// surplus; fewer, and boot entries would point at snapshots cleanup already
-/// deleted.
+/// How many numbered snapshots snapper keeps by default.
 pub const SNAPSHOT_LIMIT: u32 = 10;
 
-/// Path of the refind-btrfs configuration.
+/// Path of the `snap-pac` configuration file.
+pub const SNAP_PAC_INI_PATH: &str = "/etc/snap-pac.ini";
+
+/// Directory and path of the `grub-btrfs` configuration file.
+pub const GRUB_BTRFS_CONF_DIR: &str = "/etc/default/grub-btrfs";
+pub const GRUB_BTRFS_CONF_PATH: &str = "/etc/default/grub-btrfs/config";
+
+/// Helper script called by [`GRUB_BTRFS_HOOK`] and during installation to
+/// regenerate `/boot/grub/grub-btrfs.cfg` (and `/boot/grub/grub.cfg` if the
+/// submenu block is not yet present).
+pub const UPDATE_SCRIPT_PATH: &str = "/usr/local/bin/noos-grub-btrfs-update";
+
+/// Pacman hook that regenerates `/boot/grub/grub.cfg` when a kernel, microcode
+/// or bootloader package changes.
 ///
-/// Installed by the package, with defaults written for Snapper — which is what
-/// this distribution uses. The installer deliberately does **not** write it:
-/// reimplementing a configuration file whose keys are the tool's own business
-/// is how a working default gets broken by a well-meaning override.
-pub const REFIND_BTRFS_CONF: &str = "/etc/refind-btrfs.conf";
+/// Ordered at `96-` so it runs after `90-mkinitcpio-install.hook` and
+/// `95-noos-secureboot.hook`.
+pub const GRUB_MKCONFIG_HOOK_PATH: &str = "/etc/pacman.d/hooks/96-noos-grub-mkconfig.hook";
+
+/// Pacman hook that refreshes `/boot/grub/grub-btrfs.cfg` synchronously after
+/// every package transaction (`pacman` or AUR).
+///
+/// Ordered at `zzz-` so it runs strictly after `zz-snap-pac-post.hook` has
+/// created the post-transaction snapshot.
+pub const GRUB_BTRFS_HOOK_PATH: &str = "/etc/pacman.d/hooks/zzz-noos-grub-btrfs.hook";
 
 /// Applied with `snapper -c root set-config KEY=VALUE` rather than by editing
 /// `/etc/snapper/configs/root` directly — snapper owns that file's format.
@@ -59,30 +82,148 @@ pub fn snapper_settings() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// systemd units to enable once `/boot` is mounted.
+/// Renders `/etc/snap-pac.ini`.
 ///
-/// `refind-btrfs.service` watches the snapshot directories and rewrites the
-/// rEFInd stanzas whenever one appears or disappears. Its unit is ordered
-/// before `snapper-boot.service` upstream, so snapshots taken at boot are
-/// covered too.
+/// Configures `snap-pac` to take pre and post snapshots on the `root` Snapper
+/// configuration for every `pacman` / AUR transaction and mark kernel,
+/// bootloader and full system upgrades as `important=yes`.
+pub fn snap_pac_ini() -> String {
+    format!(
+        "# Generated by the noos-os installer.\n\
+         #\n\
+         # Configures snap-pac to create pre and post btrfs snapshots around every\n\
+         # pacman and AUR (yay / makepkg -i / noos-package-manager) transaction.\n\
+         \n\
+         [{config}]\n\
+         snapshot = True\n\
+         cleanup_algorithm = number\n\
+         desc_limit = 72\n\
+         important_packages = [\"linux\", \"linux-lts\", \"linux-zen\", \"grub\", \"grub-btrfs\", \"btrfs-progs\", \"mkinitcpio\", \"systemd\"]\n\
+         important_commands = [\"pacman -Syu\", \"yay -Syu\", \"yay\"]\n",
+        config = SNAPPER_CONFIG_NAME,
+    )
+}
+
+/// Renders `/etc/default/grub-btrfs/config`.
+pub fn grub_btrfs_config() -> String {
+    "# Generated by the noos-os installer.\n\
+     #\n\
+     # Configuration for /etc/grub.d/41_snapshots-btrfs and grub-btrfsd.service.\n\
+     \n\
+     GRUB_BTRFS_DISABLE=\"false\"\n\
+     GRUB_BTRFS_SUBMENUNAME=\"noos-os snapshots\"\n\
+     GRUB_BTRFS_LIMIT=\"50\"\n\
+     GRUB_BTRFS_SHOW_SNAPSHOTS_FOUND=\"true\"\n\
+     GRUB_BTRFS_SHOW_TOTAL_SNAPSHOTS_FOUND=\"true\"\n\
+     GRUB_BTRFS_IGNORE_PREFIX_PATH=(\"var/lib/docker\" \"@var/lib/docker\" \"@/var/lib/docker\" \"var/lib/containers\" \"@var/lib/containers\" \"@/var/lib/containers\")\n"
+        .to_string()
+}
+
+/// Script installed at [`UPDATE_SCRIPT_PATH`] (`/usr/local/bin/noos-grub-btrfs-update`).
+pub const UPDATE_SCRIPT: &str = "\
+#!/bin/bash
+#
+# Generated by the noos-os installer.
+#
+# Updates /boot/grub/grub-btrfs.cfg (and /boot/grub/grub.cfg when needed)
+# after a snapshot or package transaction.
+
+set -euo pipefail
+
+readonly GRUB_CFG=\"/boot/grub/grub.cfg\"
+readonly SNAPSHOTS_SCRIPT=\"/etc/grub.d/41_snapshots-btrfs\"
+
+if [[ ! -d /boot/grub ]]; then
+    exit 0
+fi
+
+if [[ ! -f \"$GRUB_CFG\" ]] || ! grep -q \"grub-btrfs.cfg\" \"$GRUB_CFG\" 2>/dev/null; then
+    /usr/bin/grub-mkconfig -o \"$GRUB_CFG\" >/dev/null 2>&1 || true
+elif [[ -x \"$SNAPSHOTS_SCRIPT\" ]]; then
+    \"$SNAPSHOTS_SCRIPT\" >/dev/null 2>&1 || true
+fi
+
+exit 0
+";
+
+/// Pacman hook installed at [`GRUB_MKCONFIG_HOOK_PATH`].
+pub const GRUB_MKCONFIG_HOOK: &str = "\
+# Generated by the noos-os installer.
+#
+# Regenerates /boot/grub/grub.cfg after kernel, microcode or GRUB changes.
+# Ordered at 96- so it runs after 90-mkinitcpio-install.hook and
+# 95-noos-secureboot.hook.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Path
+Target = usr/lib/modules/*/vmlinuz
+Target = boot/*-ucode.img
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = grub
+Target = grub-btrfs
+Target = os-prober
+
+[Action]
+Description = Mise à jour de la configuration GRUB (/boot/grub/grub.cfg)...
+When = PostTransaction
+Exec = /usr/bin/grub-mkconfig -o /boot/grub/grub.cfg
+";
+
+/// Pacman hook installed at [`GRUB_BTRFS_HOOK_PATH`].
+pub const GRUB_BTRFS_HOOK: &str = "\
+# Generated by the noos-os installer.
+#
+# Refreshes the GRUB Btrfs snapshot submenu synchronously at the end of every
+# pacman / AUR transaction. Ordered at zzz- so it runs strictly after
+# zz-snap-pac-post.hook has created the post-transaction snapshot.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Mise à jour des instantanés Btrfs dans GRUB (grub-btrfs)...
+Depends = grub-btrfs
+When = PostTransaction
+Exec = /usr/local/bin/noos-grub-btrfs-update
+";
+
+/// systemd units to enable once `/boot` is mounted and GRUB is installed.
+///
+/// `grub-btrfsd.service` watches `/.snapshots` via `inotify-tools` and
+/// regenerates `/boot/grub/grub-btrfs.cfg` whenever a snapshot appears or
+/// disappears outside pacman transactions (boot, timeline, cleanup, manual).
 pub const UNITS: &[&str] = &[
+    "snapper-boot.timer",
     "snapper-timeline.timer",
     "snapper-cleanup.timer",
-    "refind-btrfs.service",
+    "grub-btrfsd.service",
 ];
 
-/// Runtime dependency of `refind-btrfs` that is only an *optional* dependency
-/// in its PKGBUILD. Without it the watcher never sees snapshot changes and the
-/// tool does nothing at all, silently.
-pub const REQUIRED_EXTRA_PACKAGES: &[&str] = &["inotify-tools"];
-
-/// The AUR package the snapshot chain rests on.
+/// Official repository packages required for the GRUB + Btrfs snapshot chain
+/// and dual-boot detection.
 ///
-/// Listed in [`crate::install`] as taken from Chaotic-AUR rather than compiled.
-/// It is a Python program, not a GraalVM native image, so it *could* be built —
-/// but keeping every AUR package on one path means one mechanism to reason
-/// about. The test in that module keeps the two lists from drifting apart.
-pub const SNAPSHOT_CHAIN_PACKAGES: &[&str] = &["refind-btrfs"];
+/// `inotify-tools` is only an optional dependency of `grub-btrfs` upstream,
+/// but `grub-btrfsd.service` exits immediately without `inotifywait`.
+pub const REQUIRED_EXTRA_PACKAGES: &[&str] = &["grub-btrfs", "inotify-tools", "os-prober"];
+
+/// AUR / Chaotic-AUR packages needed by the snapshot chain.
+///
+/// Empty now that `grub-btrfs` is in the official Arch `extra` repository
+/// (unlike `refind-btrfs`), so the entire snapshot chain is installed offline
+/// by `pacstrap`.
+pub const SNAPSHOT_CHAIN_PACKAGES: &[&str] = &[];
 
 #[cfg(test)]
 mod tests {
@@ -90,19 +231,12 @@ mod tests {
 
     #[test]
     fn snapper_is_always_called_without_dbus() {
-        // The installer runs snapper inside `arch-chroot`, which has no D-Bus.
-        // Without this flag `snapper -c root create-config /` fails with
-        // `org.freedesktop.DBus.Error.ServiceUnknown` — a message that names
-        // the bus error and nothing about the cause, three steps before
-        // anything else breaks.
         assert_eq!(NO_DBUS, "--no-dbus");
         assert!(NO_DBUS.starts_with("--"));
     }
 
     #[test]
     fn snapshot_limits_stay_consistent() {
-        // snapper keeps them and refind-btrfs exposes them; the two reads of
-        // one number have to come from one place.
         let snapper_limit = snapper_settings()
             .into_iter()
             .find(|(k, _)| *k == "NUMBER_LIMIT")
@@ -112,44 +246,63 @@ mod tests {
     }
 
     #[test]
-    fn the_timers_and_the_watcher_are_enabled() {
+    fn the_timers_and_grub_btrfsd_are_enabled() {
+        assert!(UNITS.contains(&"snapper-boot.timer"));
         assert!(UNITS.contains(&"snapper-timeline.timer"));
         assert!(UNITS.contains(&"snapper-cleanup.timer"));
         assert!(
-            UNITS.contains(&"refind-btrfs.service"),
-            "sans le guetteur, aucun instantané n'apparaîtrait dans le menu"
+            UNITS.contains(&"grub-btrfsd.service"),
+            "sans grub-btrfsd.service, les snapshots timeline/boot ne mettent pas GRUB à jour"
         );
     }
 
     #[test]
-    fn no_limine_unit_survives() {
-        // The bootloader changed; a leftover unit would be enabled by systemd
-        // against a package that is no longer installed.
+    fn no_legacy_bootloader_unit_survives() {
         for unit in UNITS {
-            assert!(
-                !unit.contains("limine"),
-                "{unit} n'a plus de paquet derrière elle"
-            );
+            assert!(!unit.contains("limine"), "{unit}");
+            assert!(!unit.contains("refind"), "{unit}");
         }
     }
 
     #[test]
-    fn inotify_tools_is_required() {
-        // It is only an optdepend upstream, but without it the watcher is inert.
+    fn required_extra_packages_include_grub_btrfs_and_inotify_tools() {
+        assert!(REQUIRED_EXTRA_PACKAGES.contains(&"grub-btrfs"));
         assert!(REQUIRED_EXTRA_PACKAGES.contains(&"inotify-tools"));
+        assert!(REQUIRED_EXTRA_PACKAGES.contains(&"os-prober"));
     }
 
     #[test]
-    fn the_snapshot_chain_is_the_package_that_generates_the_stanzas() {
-        // Renaming this here without renaming it upstream would leave the
-        // installation reporting success with no snapshot menu anywhere.
-        assert_eq!(SNAPSHOT_CHAIN_PACKAGES, &["refind-btrfs"]);
+    fn snap_pac_ini_enables_root_snapshots_and_important_commands() {
+        let ini = snap_pac_ini();
+        assert!(ini.contains("[root]"));
+        assert!(ini.contains("snapshot = True"));
+        assert!(ini.contains("cleanup_algorithm = number"));
+        assert!(ini.contains("pacman -Syu"));
+        assert!(ini.contains("yay -Syu"));
+        assert!(ini.contains("linux-zen"));
+        assert!(ini.contains("grub"));
     }
 
     #[test]
-    fn the_refind_btrfs_config_is_left_to_its_package() {
-        // The path is pinned so the installer's documentation and the package
-        // cannot drift; the *contents* are deliberately not written by us.
-        assert_eq!(REFIND_BTRFS_CONF, "/etc/refind-btrfs.conf");
+    fn grub_btrfs_config_sets_submenu_name() {
+        let conf = grub_btrfs_config();
+        assert!(conf.contains("GRUB_BTRFS_DISABLE=\"false\""));
+        assert!(conf.contains("GRUB_BTRFS_SUBMENUNAME=\"noos-os snapshots\""));
+    }
+
+    #[test]
+    fn pacman_hooks_run_in_the_right_order() {
+        let mkconfig_name = GRUB_MKCONFIG_HOOK_PATH.rsplit('/').next().unwrap();
+        let btrfs_name = GRUB_BTRFS_HOOK_PATH.rsplit('/').next().unwrap();
+
+        assert!(
+            mkconfig_name > "95-noos-secureboot.hook",
+            "96-noos-grub-mkconfig.hook doit tourner après 95-noos-secureboot.hook"
+        );
+        assert!(
+            btrfs_name > "zz-snap-pac-post.hook",
+            "zzz-noos-grub-btrfs.hook ({btrfs_name}) doit tourner après zz-snap-pac-post.hook"
+        );
+        assert!(GRUB_BTRFS_HOOK.contains(&format!("Exec = {UPDATE_SCRIPT_PATH}")));
     }
 }

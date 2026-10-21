@@ -5,7 +5,7 @@
 Une distribution basée sur Arch : une ISO live construite avec `archiso` qui
 démarre directement sur un **installateur graphique plein écran** — pas de
 bureau — et qui installe un système Arch avec **btrfs + snapshots restaurables
-depuis rEFInd**.
+depuis GRUB (`grub-btrfs`) avec le thème WhiteSur**.
 
 ## Construire l'ISO
 
@@ -72,16 +72,16 @@ virtio-gpu avec accélération 3D. `./scripts/run-vm.sh clean` efface tout.
 
 ### Ce qu'il faut vérifier
 
-1. L'ISO démarre sur systemd-boot et lance l'installateur en plein écran.
+1. L'ISO démarre sur GRUB (thème WhiteSur) et lance l'installateur en plein écran.
 2. Le parcours complet aboutit, le terminal affiche la sortie de pacstrap.
-3. Après redémarrage, le système installé démarre sur rEFInd.
+3. Après redémarrage, le système installé démarre sur GRUB avec le sous-menu d'instantanés `grub-btrfs`.
 
 Sur le système installé :
 
 ```bash
 findmnt                          # les sous-volumes btrfs sont-ils montés ?
 snapper -c root list             # des snapshots existent-ils ?
-cat /boot/EFI/refind/noos-snapshots/*.conf   # les entrées générées par refind-btrfs
+cat /boot/grub/grub-btrfs.cfg    # les entrées générées par grub-btrfs
 ```
 
 ### Si l'interface ne s'affiche pas
@@ -103,7 +103,7 @@ Disque unique, GPT, effacement complet :
 
 | # | Partition | FS | Taille | Montage |
 |---|---|---|---|---|
-| 1 | ESP | **FAT32** | 8 Gio | `/boot` |
+| 1 | ESP | **FAT32** | 1 Gio | `/boot` |
 | 2 | swap | swap | 8 Gio (optionnel) | — |
 | 3 | racine | btrfs | le reste | `/` + sous-volumes |
 
@@ -112,16 +112,10 @@ Sous-volumes : `@` → `/` (le seul snapshoté), `@home`, `@log`, `@cache`,
 
 Trois contraintes non négociables, chacune expliquée dans le code :
 
-- **`/boot` doit être FAT32.** Le firmware lit le FAT nativement et rEFInd en
-  hérite ; un `/boot` en btrfs obligerait rEFInd à charger son propre pilote,
-  dont le wiki Arch dit qu'il se trompe sur un volume dédupliqué ou en
-  copy-on-write.
+- **`/boot` doit être FAT32.** Le firmware lit le FAT nativement et GRUB y stocke
+  ses fichiers de configuration, le thème WhiteSur et le noyau.
 - **1 Gio de `/boot` suffisent.** Il porte le noyau, son initramfs, le microcode
-  et les fichiers de rEFInd. Les 8 Gio d'avant servaient à `limine-snapper-sync`,
-  qui y copiait un noyau par instantané ; rEFInd partage un seul noyau et ne
-  change que le sous-volume racine. **Contrepartie assumée : les instantanés ne
-  restaurent plus le noyau** — une mise à jour qui casse le démarrage ne se
-  rattrape plus en démarrant un instantané.
+  et les fichiers de GRUB (`grub.cfg`, `grub-btrfs.cfg`, thème WhiteSur).
 - **La swap est une partition, pas un fichier.** Un sous-volume contenant un
   swapfile actif ne peut pas être snapshoté : un swapfile dans `@` bloquerait
   toute la chaîne de rollback.
@@ -137,16 +131,16 @@ La chaîne repose sur `shim-signed` (signé par *Microsoft Corporation UEFI CA
 
 1. **Sur le média live**, `scripts/build-iso.sh` génère une paire de clés MOK
    éphémère, place `shimx64.efi` en `/EFI/BOOT/BOOTx64.EFI` avec `mmx64.efi` à
-   ses côtés, et signe `grubx64.efi` (`systemd-boot`), `refind_x64.efi`, ses
-   pilotes (`iso9660_x64.efi`), le shell UEFI et le noyau live `vmlinuz-linux`.
+   ses côtés, et signe `grubx64.efi` (GRUB standalone avec SBAT et thème
+   WhiteSur), le shell UEFI et le noyau live `vmlinuz-linux`.
    La clé privée est détruite à la fin du build ; seul le certificat public DER
    (`noos-mok.cer`) est embarqué à la racine de l'ESP et de l'ISO.
 2. **Sur le système installé**, l'installateur génère une paire de clés RSA-2048
-   propre à la machine dans `/etc/refind.d/keys/` (`0700`), copie le certificat
-   public en `/boot/noos-mok.cer`, signe rEFInd et le noyau avec `sbsign`, et
-   installe le hook pacman `/etc/pacman.d/hooks/95-noos-secureboot.hook`
+   propre à la machine dans `/etc/noos/keys/` (`0700`), copie le certificat
+   public en `/boot/noos-mok.cer`, signe `grubx64.efi` et le noyau avec `sbsign`,
+   et installe le hook pacman `/etc/pacman.d/hooks/95-noos-secureboot.hook`
    (`/usr/local/bin/noos-sb-sign`) pour que chaque `pacman -Syu` resigne
-   automatiquement le noyau après `mkinitcpio`.
+   automatiquement GRUB et le noyau après `mkinitcpio`.
 3. **Au premier démarrage sous Secure Boot**, `shimx64.efi` ouvre `mmx64.efi`
    (*MokManager*) : choisir *Enroll key from disk* → `noos-mok.cer` → *Reboot*.
    L'enrôlement par fichier sur l'ESP évite `mokutil --import` et son mot de
@@ -155,21 +149,18 @@ La chaîne repose sur `shim-signed` (signé par *Microsoft Corporation UEFI CA
 
 ## Le dépôt Chaotic-AUR
 
-Trois paquets dont la distribution a besoin viennent de l'AUR, qui ne distribue
-que des sources. `refind-btrfs` est un programme Python — il *pourrait* être
-construit — mais il vient de **Chaotic-AUR** comme `yay`, pour qu'il n'y ait
-qu'un seul chemin pour les paquets AUR.
-
-L'historique vaut d'être connu : la chaîne de snapshots reposait sur
-`limine-snapper-sync` et `limine-mkinitcpio-hook`, qui se compilent en **image
-native GraalVM** — un JDK de 300 Mo, Gradle, et une compilation ahead-of-time
-qui échoue sous `makepkg` en sortant 30 sans le moindre message.
+Les paquets `shim-signed` et `yay` viennent de **Chaotic-AUR** afin
+d'être installés sous forme de binaires signés plutôt que compilés sur la
+machine cible. Le gestionnaire de paquets graphique `noos-package-manager` et
+le pare-feu graphique `noos-firewall` sont installés automatiquement depuis
+l'AUR via `yay`. La chaîne de snapshots (`snapper`, `snap-pac`, `grub-btrfs`,
+`inotify-tools`) provient intégralement des dépôts officiels Arch Linux.
 
 Le dépôt est activé **sur la machine de build et sur la cible** :
 
 - au build, pour que le média live embarque `chaotic-keyring` et
   `chaotic-mirrorlist` ;
-- sur la cible, pour que l'installateur y prenne la chaîne de snapshots et `yay`
+- sur la cible, pour que l'installateur y prenne `shim-signed` et `yay`
   comme dans n'importe quel dépôt — et pour que l'utilisateur garde ensuite une
   vaste source de paquets AUR précompilés.
 
@@ -187,7 +178,7 @@ AOT. Voir `installer/core/src/chaotic.rs`.
 
 Sur GNOME, le thème d'icônes **Papirus-Dark** est appliqué avec le schéma de
 couleurs sombre, cohérent avec l'installateur, l'écran Plymouth et le thème
-rEFInd.
+GRUB WhiteSur.
 
 Il ne l'est pas par un réglage utilisateur : au moment de l'installation
 personne ne s'est jamais connecté, et `dconf` comme `gsettings set` veulent le
@@ -260,18 +251,18 @@ distribution, avant ceux de l'utilisateur, qui peut donc le surcharger.
 
 ```
 installer/
-  core/           moteur d'installation, sans dépendance Tauri — 221 tests
-    src/          layout, btrfs, refind, secureboot, snapshots, chaotic, flatpak,
+  core/           moteur d'installation, sans dépendance Tauri — 248 tests
+    src/          layout, btrfs, grub, secureboot, snapshots, chaotic, flatpak,
                   kernel, keyboard, network, powersave, gpu, services, validate
     src/bin/      CLI : plan | gpu | check | install
   src-tauri/      l'application Tauri v2 (interface)
   src/            frontend React (9 écrans, FR/EN)
 iso/
-  profiledef.sh   profil archiso (UEFI uniquement)
+  profiledef.sh   profil archiso (UEFI GRUB uniquement)
   pacman.conf     miroirs Arch + section [chaotic-aur]
   packages.x86_64 paquets du média live
-  airootfs/       autologin tty1 → cage, réseau, trousseau pacman, Plymouth
-  efiboot/        configuration systemd-boot du live
+  airootfs/       autologin tty1 → cage, réseau, trousseau pacman, Plymouth, thème GRUB WhiteSur
+  grub/           configuration GRUB du live (grub.cfg + loopback.cfg)
 scripts/
   build-iso.sh                  construit l'ISO et la vérifie
   run-vm.sh                     crée et démarre la VM de test
@@ -281,7 +272,6 @@ scripts/
   generate-map-data.js          carte du monde et fuseaux, depuis Natural Earth
   generate-nvidia-table.js      table de détection NVIDIA, depuis les sources NVIDIA
   generate-plymouth-frames.js   images du splash, depuis noos-svg.svg
-  generate-refind-theme.js      thème du menu rEFInd, depuis noos-svg.svg
   generate-flatpak-remote.sh    définition du dépôt Flathub, depuis Flathub
 .github/workflows/
   build-iso.yml   construit l'ISO en CI et la publie sur tag
@@ -289,8 +279,8 @@ scripts/
 
 Le moteur est une bibliothèque sans dépendance Tauri : l'application graphique,
 la CLI et les tests pilotent tous le même code. Tout ce qui *décrit*
-l'installation (tailles de partitions, `fstab`, `refind.conf`, réglages
-snapper) est une fonction pure, donc vérifiable sans root.
+l'installation (tailles de partitions, `fstab`, `/etc/default/grub`, réglages
+snapper / `snap-pac` / `grub-btrfs`) est une fonction pure, donc vérifiable sans root.
 
 ## La CLI
 
@@ -303,16 +293,9 @@ noos-install install config.json  # exécute (nécessite root)
 
 ## Notes
 
-- **UEFI uniquement, pour le live comme pour la cible.** rEFInd n'a pas
-  d'équivalent à l'écriture d'un chargeur dans le MBR d'un disque : sur une
+- **UEFI uniquement, pour le live comme pour la cible.** Sur une
   machine BIOS, l'installateur échoue en le disant, plutôt que de laisser un
   disque non amorçable passer pour une installation réussie.
-- **Le média live passe par systemd-boot avant rEFInd.** mkarchiso n'a pas de
-  mode rEFInd et ne lit que `loader.conf` et `entries/` d'un profil : il n'existe
-  aucun moyen supporté de lui confier un binaire EFI supplémentaire. systemd-boot
-  est donc construit normalement — c'est lui qui produit une image UEFI valide —
-  et son unique entrée, en `timeout 0`, passe la main à rEFInd sans jamais
-  afficher de menu. Le détail est dans `scripts/build-iso.sh`.
 - **Aucun fichier appartenant à un paquet n'est livré dans `airootfs`.**
   `airootfs` est copié *avant* que `pacstrap` tourne, donc livrer par exemple
   `/etc/locale.gen` (qui appartient à `glibc`) ferait refuser l'installation du

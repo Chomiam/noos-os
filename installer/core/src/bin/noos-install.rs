@@ -11,7 +11,7 @@ use noos_core::config::InstallConfig;
 use noos_core::events::StdoutSink;
 use noos_core::exec::Runner;
 use noos_core::install::Installer;
-use noos_core::{audio, btrfs, gpu, keyboard, layout, mkinitcpio, refind, secureboot};
+use noos_core::{audio, btrfs, gpu, grub, keyboard, layout, mkinitcpio, secureboot, snapshots};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -186,16 +186,19 @@ fn cmd_check(args: &[String]) -> ExitCode {
         audio::no_suspend_conf()
     );
     println!(
-        "===== /boot/EFI/refind/refind.conf =====\n{}",
-        refind::refind_conf(btrfs_uuid, swap_uuid, config.kernel)
+        "===== {} =====\n{}",
+        grub::GRUB_DEFAULT_PATH,
+        grub::default_grub(swap_uuid)
     );
     println!(
-        "===== /boot/refind_linux.conf =====\n{}",
-        refind::refind_linux_conf(btrfs_uuid, swap_uuid)
+        "===== {} =====\n{}",
+        snapshots::SNAP_PAC_INI_PATH,
+        snapshots::snap_pac_ini()
     );
     println!(
-        "===== themes/noos/theme.conf =====\n{}",
-        refind::theme_conf()
+        "===== {} =====\n{}",
+        snapshots::GRUB_BTRFS_CONF_PATH,
+        snapshots::grub_btrfs_config()
     );
     println!(
         "===== {} =====\n{}",

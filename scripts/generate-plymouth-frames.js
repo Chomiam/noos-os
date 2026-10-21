@@ -72,8 +72,28 @@ for (let frame = 0; frame < FRAMES; frame += 1) {
 // before the sequence is loaded.
 writeFileSync(`${THEME}logo.png`, readFileSync(`${THEME}frame-00.png`));
 
+// Progress bar track and fill bitmaps (Plymouth's script engine has no native
+// Rectangle primitive, so it scales a Sprite backed by a PNG).
+const BAR_WIDTH = 280;
+const BAR_HEIGHT = 2;
+for (const [name, fill] of [
+  ["progress_box.png", "#24262b"],
+  ["progress_bar.png", "#8ab4f8"],
+]) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${BAR_WIDTH}" height="${BAR_HEIGHT}"><rect width="100%" height="100%" fill="${fill}"/></svg>`;
+  const svgFile = `${scratch}/${name}.svg`;
+  writeFileSync(svgFile, svg);
+  execFileSync("rsvg-convert", [
+    "-w", String(BAR_WIDTH),
+    "-h", String(BAR_HEIGHT),
+    "-o", `${THEME}${name}`,
+    svgFile,
+  ]);
+}
+
 console.log(
   `${FRAMES} images générées dans ${THEME.replace(process.cwd() + "/", "")}`,
 );
 console.log(`  frame-00.png … frame-${String(FRAMES - 1).padStart(2, "0")}.png`);
 console.log(`  logo.png (image fixe de secours)`);
+console.log(`  progress_box.png, progress_bar.png (barre de progression)`);

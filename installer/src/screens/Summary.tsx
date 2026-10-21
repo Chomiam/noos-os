@@ -36,8 +36,6 @@ export function SummaryScreen({
     [t("summary.desktop"), t(`desktop.${draft.desktop}`)],
     [t("summary.kernel"), t(`options.kernel.${draft.kernel}`)],
     [t("summary.swap"), draft.swap ? yes : no],
-    [t("summary.aur"), draft.enableAur ? yes : no],
-    [t("summary.shelly"), draft.installShelly ? yes : no],
   ];
 
   if (drivers.length > 0) {

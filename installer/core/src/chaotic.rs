@@ -31,6 +31,10 @@ pub const PACMAN_CONF: &str = "/etc/pacman.conf";
 /// The repository section, exactly as Chaotic documents it.
 pub const SECTION: &str = "chaotic-aur";
 
+/// The 32-bit repository section, enabled alongside Chaotic-AUR.
+pub const MULTILIB_SECTION: &str = "multilib";
+pub const MULTILIB_INCLUDE: &str = "/etc/pacman.d/mirrorlist";
+
 /// The signing key, as Chaotic publishes it.
 ///
 /// Checked against the key itself: `3056513887B78AEB`, a 2048-bit RSA key
@@ -61,18 +65,19 @@ pub fn section() -> String {
     )
 }
 
-/// Adds the section to a `pacman.conf`, leaving everything else untouched.
+/// Enables `[multilib]` and adds `[chaotic-aur]` to a `pacman.conf`, leaving
+/// everything else untouched.
 ///
 /// Idempotent, and written as a pure function for the same reason
 /// [`crate::locale::enable`] is: this is a file the `pacman` package owns, and
 /// the only safe way to change it is to take the file's own contents, add a
 /// line, and give them back.
 pub fn enable(pacman_conf: &str) -> String {
-    if is_enabled(pacman_conf) {
-        return pacman_conf.to_string();
+    let mut out = enable_multilib(pacman_conf);
+    if is_enabled(&out) {
+        return out;
     }
 
-    let mut out = pacman_conf.to_string();
     // A file that does not end in a newline would otherwise have the section
     // glued onto its last line, and pacman would read that line as garbage.
     if !out.ends_with('\n') && !out.is_empty() {
@@ -80,6 +85,37 @@ pub fn enable(pacman_conf: &str) -> String {
     }
     out.push_str(&section());
     out
+}
+
+/// Enables `[multilib]` in a `pacman.conf` by uncommenting the stock block if
+/// present, or appending the section if absent.
+pub fn enable_multilib(pacman_conf: &str) -> String {
+    if is_multilib_enabled(pacman_conf) {
+        return pacman_conf.to_string();
+    }
+
+    const COMMENTED: &str = "#[multilib]\n#Include = /etc/pacman.d/mirrorlist";
+    const UNCOMMENTED: &str = "[multilib]\nInclude = /etc/pacman.d/mirrorlist";
+
+    if pacman_conf.contains(COMMENTED) {
+        return pacman_conf.replacen(COMMENTED, UNCOMMENTED, 1);
+    }
+
+    let mut out = pacman_conf.to_string();
+    if !out.ends_with('\n') && !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(&format!(
+        "\n[{MULTILIB_SECTION}]\nInclude = {MULTILIB_INCLUDE}\n"
+    ));
+    out
+}
+
+/// Whether `[multilib]` is already enabled.
+pub fn is_multilib_enabled(pacman_conf: &str) -> bool {
+    pacman_conf
+        .lines()
+        .any(|line| line.trim() == format!("[{MULTILIB_SECTION}]"))
 }
 
 /// Whether the section is already present.
@@ -166,5 +202,20 @@ Include = /etc/pacman.d/mirrorlist
         // working the moment Chaotic rotates the key.
         assert!(REPO_PACKAGES.contains(&"chaotic-keyring"));
         assert!(REPO_PACKAGES.contains(&"chaotic-mirrorlist"));
+    }
+
+    #[test]
+    fn multilib_is_enabled_in_place_without_touching_multilib_testing() {
+        let stock = format!(
+            "{SAMPLE}\n#[multilib-testing]\n#Include = /etc/pacman.d/mirrorlist\n\n\
+             #[multilib]\n#Include = /etc/pacman.d/mirrorlist\n"
+        );
+        let out = enable(&stock);
+        assert!(is_multilib_enabled(&out), "multilib devrait être activé :\n{out}");
+        assert!(
+            out.contains("#[multilib-testing]\n#Include = /etc/pacman.d/mirrorlist"),
+            "multilib-testing doit rester commenté :\n{out}"
+        );
+        assert_eq!(out.matches("[multilib]").count(), 1);
     }
 }

@@ -1,0 +1,16 @@
+#
+# filesystem ships /usr/share/pixmaps/archlinux-logo*. Replacing them via a
+# PostTransaction hook avoids shipping our own copies in airootfs, which would
+# conflict with the filesystem package during pacstrap.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = filesystem
+
+[Action]
+Description = Applying noos-os distribution logo to /usr/share/pixmaps...
+When = PostTransaction
+Depends = coreutils
+Exec = /usr/bin/sh -c 'cp -f /usr/share/noos/fastfetch/noos-infinity.svg /usr/share/pixmaps/archlinux-logo.svg && cp -f /usr/share/noos/fastfetch/noos-infinity.svg /usr/share/pixmaps/archlinux-logo-text.svg && cp -f /usr/share/noos/fastfetch/noos-infinity.svg /usr/share/pixmaps/archlinux-logo-text-dark.svg && cp -f /usr/share/noos/fastfetch/noos-infinity.png /usr/share/pixmaps/archlinux-logo.png'

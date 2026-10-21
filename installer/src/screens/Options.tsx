@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 
-import { Badge, Card, Choice, Head, Switch } from "../components/primitives";
+import { Badge, Card, Choice, Head } from "../components/primitives";
 import { useI18n } from "../i18n";
 import {
-  checkNetwork,
   detectHardware,
   type Hardware,
   type Kernel,
@@ -14,10 +13,8 @@ import type { Draft } from "../lib/draft";
 /**
  * Options.
  *
- * Grouped into labelled sections rather than one flat list: by this point the
- * screen holds four unrelated decisions — the kernel, the optional services,
- * the detected hardware, and the package-management extras — and without
- * headings it reads as an undifferentiated wall of switches.
+ * Grouped into labelled sections rather than one flat list: the kernel and the
+ * detected hardware.
  */
 export function OptionsScreen({
   draft,
@@ -28,21 +25,10 @@ export function OptionsScreen({
 }) {
   const { t } = useI18n();
   const [hardware, setHardware] = useState<Hardware | null>(null);
-  const [online, setOnline] = useState<boolean | null>(null);
 
   useEffect(() => {
     detectHardware().then(setHardware).catch(() => setHardware(null));
-    checkNetwork().then(setOnline).catch(() => setOnline(false));
   }, []);
-
-  // AUR packages have to be fetched and built, so the option is meaningless
-  // without a network. Turning it off rather than hiding it explains why.
-  const aurAvailable = online !== false;
-
-  useEffect(() => {
-    if (!aurAvailable && draft.enableAur) update({ enableAur: false });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aurAvailable]);
 
   const legacy = hardware?.nvidia === "legacy";
 
@@ -150,23 +136,6 @@ export function OptionsScreen({
             </div>
           </div>
         )}
-      </Section>
-
-      <Section title={t("options.softwareSection")}>
-        <Switch
-          checked={draft.enableAur}
-          onChange={(enableAur) => update({ enableAur })}
-          disabled={!aurAvailable}
-          title={t("options.aur")}
-          hint={aurAvailable ? t("options.aurHint") : t("options.networkRequired")}
-        />
-        <Switch
-          checked={draft.installShelly}
-          onChange={(installShelly) => update({ installShelly })}
-          disabled={!aurAvailable || !draft.enableAur}
-          title={t("options.shelly")}
-          hint={t("options.shellyHint")}
-        />
       </Section>
     </div>
   );

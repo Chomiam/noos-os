@@ -13,40 +13,20 @@ iso_application="noos-os live/install medium"
 iso_version="$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y.%m.%d)"
 install_dir="noos"
 
-# UEFI only, and systemd-boot only as a hand-off.
-#
-# The *installed* system boots with rEFInd, which is UEFI-only — it has no
-# equivalent of writing a bootloader into a disk's MBR, and the installer says
-# so rather than leaving the disk unbootable.
-#
-# This mode is not what the live medium shows. mkarchiso has no rEFInd bootmode,
-# so systemd-boot is built here — it is what produces a valid UEFI image — and
-# its single entry chainloads rEFInd, which draws the menu. See the entry in
-# efiboot/ and the staging step in scripts/build-iso.sh.
-#
-# Dropping syslinux also removes a set of concatenated boot configs
-# (archiso_head + archiso_sys + archiso_tail) that would need their own testing.
-bootmodes=('uefi.systemd-boot')
+# UEFI GRUB boot mode, matching the installed system's bootloader (GRUB +
+# grub-btrfs with the WhiteSur theme).
+bootmodes=('uefi.grub')
 
 arch="x86_64"
 pacman_conf="pacman.conf"
 airootfs_image_type="squashfs"
 
-# Kernel parameters for the live medium.
-#
-# Kept for the profile's own record, but note that nothing substitutes it any
-# more: `%KERNEL_PARAMS%` has no user now that rEFInd, not systemd-boot, is what
-# loads the live kernel. The command line actually used is written by
-# scripts/build-iso.sh into rEFInd's configuration, and it matches this line.
-# Editing one without the other has no effect on the boot.
+# Kernel parameters for the live medium, substituted into iso/grub/grub.cfg via
+# %KERNEL_PARAMS%.
 #
 # `splash` activates the Plymouth theme defined in airootfs; `quiet` keeps the
 # kernel from printing over it. The two go together — a splash with kernel
 # messages scrolling across it looks broken.
-#
-# Recovery, if the splash ever hangs: rEFInd has an options editor (press F2 on
-# an entry), so `plymouth.enable=0` can be added at the menu, and Ctrl+Alt+F2
-# still reaches a shell.
 kernel_params_x86_64="quiet splash"
 
 # zstd rather than releng's xz: the build is several times faster and the ISO

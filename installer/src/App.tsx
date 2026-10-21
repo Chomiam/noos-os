@@ -22,7 +22,6 @@ import {
 import { useInstall } from "./lib/useInstall";
 
 import { AccountScreen } from "./screens/Account";
-import { DesktopScreen } from "./screens/Desktop";
 import { DiskScreen } from "./screens/Disk";
 import { InstallScreen } from "./screens/Install";
 import { KeyboardScreen } from "./screens/Keyboard";
@@ -43,7 +42,6 @@ const STEPS = [
   "network",
   "disk",
   "account",
-  "desktop",
   "options",
   "summary",
   "install",
@@ -225,7 +223,6 @@ function Shell() {
               />
             )}
             {step === "account" && <AccountScreen draft={draft} update={update} />}
-            {step === "desktop" && <DesktopScreen draft={draft} update={update} />}
             {step === "options" && <OptionsScreen draft={draft} update={update} />}
             {step === "summary" && (
               <SummaryScreen draft={draft} disks={disks} drivers={drivers} />

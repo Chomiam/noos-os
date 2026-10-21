@@ -90,6 +90,7 @@ pub const COMMON_PACKAGES: &[&str] = &[
     "noto-fonts",
     "ttf-dejavu",
     "ttf-liberation",
+    "ghostty",
 ];
 
 impl Desktop {
@@ -203,7 +204,7 @@ static GNOME: DesktopProfile = DesktopProfile {
         // The screen reader. Removing it is a real accessibility trade-off,
         // not a size one — put it back for any image meant for a wide public.
         "orca",
-        // Browsers and stores: the distro ships pacman, yay and Shelly instead.
+        // Browsers and stores: the distro ships pacman, yay and noos-package-manager instead.
         "epiphany",
         "gnome-software",
         // Media players — all three of GNOME's, replaced by VLC.
@@ -225,6 +226,8 @@ static GNOME: DesktopProfile = DesktopProfile {
         "gnome-tour",
         // Remote desktop, both ends: nothing here wants to be a VNC server.
         "gnome-remote-desktop",
+        // Terminal: replaced by Ghostty across all desktops.
+        "gnome-console",
     ],
     display_manager: DisplayManager::Gdm,
     greeter_session: None,
@@ -233,8 +236,6 @@ static GNOME: DesktopProfile = DesktopProfile {
 // What the GNOME trim deliberately leaves alone, so a later reader does not
 // "finish the job" and break something:
 //
-//   gnome-console        the only terminal in the group, and vim, nano and
-//                        man-db are installed
 //   papers, loupe        the only PDF and image viewers; VLC does neither
 //   gnome-text-editor    the only graphical editor
 //   gnome-disk-utility   how a user inspects the btrfs subvolumes
@@ -248,13 +249,24 @@ static GNOME: DesktopProfile = DesktopProfile {
 static PLASMA: DesktopProfile = DesktopProfile {
     packages: &[
         "plasma",
-        "konsole",
         "dolphin",
-        "kate",
         "sddm",
         "xdg-desktop-portal-kde",
+        // The WhiteSur Liquid theme uses Kvantum for translucent Qt 6 and Qt 5
+        // application windows; see [`crate::theme`].
+        "kvantum",
+        "kvantum-qt5",
     ],
-    removals: &[],
+    removals: &[
+        // The television shell, included in Arch's `plasma` group. Left in
+        // place, it drops `/usr/share/wayland-sessions/plasma-bigscreen-wayland.desktop`
+        // beside `plasma.desktop` — and because `-` (0x2D) sorts before `.` (0x2E)
+        // in ASCII, SDDM picks Bigscreen as the default session on first boot.
+        "plasma-bigscreen",
+        // Store front: the distro ships pacman, yay and noos-package-manager instead (same
+        // rationale as `gnome-software` in GNOME).
+        "discover",
+    ],
     display_manager: DisplayManager::Sddm,
     greeter_session: None,
 };
@@ -265,7 +277,6 @@ static CINNAMON: DesktopProfile = DesktopProfile {
         "muffin",
         "nemo",
         "nemo-fileroller",
-        "gnome-terminal",
         "gnome-keyring",
         "xdg-desktop-portal-gtk",
         "lightdm",
@@ -279,7 +290,6 @@ static CINNAMON: DesktopProfile = DesktopProfile {
 static BUDGIE: DesktopProfile = DesktopProfile {
     packages: &[
         "budgie",
-        "gnome-terminal",
         "gnome-keyring",
         "xdg-desktop-portal-gtk",
         "lightdm",
@@ -394,19 +404,20 @@ mod tests {
 
     #[test]
     fn only_a_group_install_needs_removals() {
-        // Every other profile spells its packages out, so there is nothing to
-        // take back out; a non-empty list there would mean a package installed
-        // and removed in the same run.
+        // Cinnamon and Budgie spell their packages out (or need no trimming), so
+        // there is nothing to take back out; GNOME and Plasma install a group
+        // that pulls in unwanted leaves.
         for desktop in Desktop::all() {
-            if desktop == Desktop::Gnome {
+            if matches!(desktop, Desktop::Gnome | Desktop::Plasma) {
                 assert!(
                     !desktop.removals().is_empty(),
-                    "le groupe gnome a besoin d'être trié"
+                    "le groupe {} a besoin d'être trié",
+                    desktop.label()
                 );
             } else {
                 assert!(
                     desktop.removals().is_empty(),
-                    "{} n'installe pas de groupe",
+                    "{} n'a rien à retirer",
                     desktop.label()
                 );
             }
@@ -414,15 +425,52 @@ mod tests {
     }
 
     #[test]
+    fn plasma_removes_bigscreen_so_sddm_defaults_to_plasma_wayland() {
+        // `plasma-bigscreen-wayland.desktop` sorts before `plasma.desktop` in
+        // ASCII (`-` < `.`), which makes SDDM select the TV shell on first boot.
+        assert!(
+            Desktop::Plasma.removals().contains(&"plasma-bigscreen"),
+            "plasma-bigscreen doit être retiré pour ne pas devenir la session SDDM par défaut"
+        );
+        assert!(
+            Desktop::Plasma.removals().contains(&"discover"),
+            "discover doit être retiré au profit de pacman, yay et noos-package-manager"
+        );
+        assert!(
+            !Desktop::Plasma.packages().contains(&"kate"),
+            "kate (et kwrite) ne doivent pas être installés par défaut"
+        );
+    }
+
+    #[test]
+    fn ghostty_is_the_terminal_for_every_desktop() {
+        for desktop in Desktop::all() {
+            let packages = desktop.packages();
+            assert!(
+                packages.contains(&"ghostty"),
+                "{} devrait installer ghostty",
+                desktop.label()
+            );
+            for other_terminal in ["konsole", "gnome-terminal", "gnome-console"] {
+                assert!(
+                    !packages.contains(&other_terminal),
+                    "{} ne doit pas installer {other_terminal}",
+                    desktop.label()
+                );
+            }
+        }
+        assert!(Desktop::Gnome.removals().contains(&"gnome-console"));
+    }
+
+    #[test]
     fn nothing_worth_keeping_is_removed() {
         // What the trim leaves the desktop with. The first group is the only
-        // provider of something a user needs — a terminal, the PDF and image
-        // viewers, an editor, the disks tool, the wallpapers. The second group
+        // provider of something a user needs — the PDF and image viewers, an
+        // editor, the disks tool, the wallpapers. The second group
         // is what `gnome-control-center` depends on directly: removing one of
         // those takes the Settings app with it, which reads as a broken desktop
         // rather than as a missing accessory.
         const KEPT: &[&str] = &[
-            "gnome-console",
             "papers",
             "loupe",
             "gnome-text-editor",

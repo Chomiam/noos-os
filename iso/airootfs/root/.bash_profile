@@ -30,6 +30,9 @@ if [[ $(tty) == /dev/tty1 ]]; then
   export XKB_DEFAULT_LAYOUT=us
   export XKB_DEFAULT_VARIANT=
 
+  # Activate NumLock on the VT before starting the Wayland compositor.
+  setleds -D +num < /dev/tty1 2>/dev/null || true
+
   # No `exec`: if the installer exits or crashes we want a shell to land in,
   # not a dead session.
   cage -d -s /usr/bin/noos-installer
@@ -37,4 +40,7 @@ if [[ $(tty) == /dev/tty1 ]]; then
   echo
   echo "L'installateur s'est arrêté. Shell de secours sur tty1."
   echo "Journaux :  journalctl -b -u systemd-logind"
+  [[ -x /usr/bin/fish ]] && exec /usr/bin/fish
+elif [[ $- == *i* && -x /usr/bin/fish ]]; then
+  exec /usr/bin/fish
 fi

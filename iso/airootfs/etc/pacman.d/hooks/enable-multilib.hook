@@ -1,0 +1,17 @@
+#
+# pacman ships /etc/pacman.conf with [multilib] commented out. Enabling it via
+# a PostTransaction hook avoids shipping our own /etc/pacman.conf in airootfs,
+# which would conflict with the pacman package during pacstrap.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = pacman
+
+[Action]
+Description = Enabling [multilib] in /etc/pacman.conf...
+When = PostTransaction
+Depends = pacman
+Depends = sed
+Exec = /usr/bin/sed -i '/^#\[multilib\]$/{s/^#//;n;s/^#//;}' /etc/pacman.conf

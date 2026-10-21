@@ -49,12 +49,14 @@ nvme-cli
 hdparm
 
 ## Bootloader tooling --------------------------------------------------------
-# `efibootmgr`, `sbsigntools` and `openssl`. The *target*'s bootloader is rEFInd,
-# installed by pacstrap and copied out of the target's own `/usr/share/refind`
-# — the live medium has no reason to carry it. What the live medium boots with
-# is rEFInd's own copy, staged and signed into the EFI image by
-# scripts/build-iso.sh, not a package here.
+# `grub`, `grub-btrfs`, `os-prober`, `inotify-tools`, `efibootmgr`, `sbsigntools`
+# and `openssl`. Both the live medium and the installed system boot with GRUB
+# (with the WhiteSur theme and grub-btrfs snapshot integration).
 
+grub
+grub-btrfs
+os-prober
+inotify-tools
 efibootmgr
 sbsigntools
 openssl
@@ -62,15 +64,7 @@ openssl
 # The UEFI shell, as the recovery path of last resort.
 #
 # mkarchiso copies `Shell_Full.efi` to `/shellx64.efi` at the ISO root *and*
-# into the EFI image, and rEFInd picks up anything named `shell*.efi` on a
-# volume it can read — which makes the shell a menu entry on this medium.
-#
-# Worth the megabyte here in a way it would not be elsewhere: the medium is
-# UEFI-only, so there is no BIOS fallback behind it, and its boot chain —
-# rEFInd chainloaded from systemd-boot, reading its kernel off the ISO9660
-# volume — is new. A shell is what turns "it will not boot" into something a
-# person can look at. Without the package mkarchiso notes the absence and
-# carries on, which is how it went unnoticed until now.
+# into the EFI image, and iso/grub/grub.cfg exposes it as a menu entry.
 
 edk2-shell
 
@@ -87,6 +81,9 @@ wpa_supplicant
 wireless-regdb
 iwd
 iw
+openssh
+samba
+ufw
 # Turns Energy Efficient Ethernet off. The script that does it calls ethtool
 # by absolute path, so a missing package would fail silently on every
 # interface — and a link that sleeps during pacstrap aborts the installation.
@@ -119,6 +116,8 @@ plymouth
 
 ## Console -------------------------------------------------------------------
 
+fish
+fastfetch
 vim
 nano
 less

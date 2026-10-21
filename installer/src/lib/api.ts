@@ -66,8 +66,6 @@ export interface InstallConfig {
   disk: string;
   swap: boolean;
   requireStrongPassword: boolean;
-  enableAur: boolean;
-  installShelly: boolean;
   firmware: Firmware;
   kernel: Kernel;
   nvidiaLegacy: NvidiaLegacy | null;

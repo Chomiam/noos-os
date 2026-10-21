@@ -17,31 +17,35 @@ screen_height = Window.GetHeight();
 # were generated from noos-svg.svg by scripts/generate-plymouth-frames.js.
 
 frame_count = 24;
-frames = [];
 
 for (i = 0; i < frame_count; i++) {
-    name = "frame-" + (i < 10 ? "0" + i : i) + ".png";
+    if (i < 10)
+        name = "frame-0" + i + ".png";
+    else
+        name = "frame-" + i + ".png";
     frames[i] = Image(name);
 }
 
-logo = Sprite();
-logo.SetX(screen_width / 2 - frames[0].GetWidth() / 2);
-logo.SetY(screen_height / 2 - frames[0].GetHeight() / 2 - 24);
+logo = Sprite(frames[0]);
+logo.SetX(Window.GetX() + screen_width / 2 - frames[0].GetWidth() / 2);
+logo.SetY(Window.GetY() + screen_height / 2 - frames[0].GetHeight() / 2 - 24);
+logo.SetZ(10);
 
 # --- progress bar ---------------------------------------------------------
 # Two pixels tall, and driven by the real boot progress. A splash that
 # animates for its own sake while the disk is idle is a lie; this one only
 # moves when the boot does.
 
-bar_width = 280;
-bar_height = 2;
-bar_x = screen_width / 2 - bar_width / 2;
-bar_y = screen_height / 2 + 76;
+progress_box.image = Image("progress_box.png");
+progress_box.sprite = Sprite(progress_box.image);
+bar_x = Window.GetX() + screen_width / 2 - progress_box.image.GetWidth() / 2;
+bar_y = Window.GetY() + screen_height / 2 + 76;
+progress_box.sprite.SetPosition(bar_x, bar_y, 1);
 
-Rectangle(bar_x, bar_y, bar_width, bar_height, 0.14, 0.15, 0.17, 1.0);
-bar_fill = Rectangle(bar_x, bar_y, 0, bar_height, 0.541, 0.706, 0.973, 1.0);
+progress_bar.original_image = Image("progress_bar.png");
+progress_bar.sprite = Sprite();
+progress_bar.sprite.SetPosition(bar_x, bar_y, 2);
 
-boot_progress = 0;
 frame_index = 0;
 ticks = 0;
 
@@ -56,12 +60,14 @@ fun on_refresh() {
         frame_index = (frame_index + 1) % frame_count;
         logo.SetImage(frames[frame_index]);
     }
-
-    bar_fill.SetWidth(bar_width * boot_progress);
 }
 
 fun on_boot_progress(duration, progress) {
-    boot_progress = progress;
+    width = Math.Int(progress_bar.original_image.GetWidth() * progress);
+    if (width > 0) {
+        progress_bar.image = progress_bar.original_image.Scale(width, progress_bar.original_image.GetHeight());
+        progress_bar.sprite.SetImage(progress_bar.image);
+    }
 }
 
 Plymouth.SetRefreshFunction(on_refresh);

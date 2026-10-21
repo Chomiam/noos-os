@@ -64,8 +64,6 @@ pub struct InstallConfig {
     pub disk: String,
     pub swap: bool,
     pub require_strong_password: bool,
-    pub enable_aur: bool,
-    pub install_shelly: bool,
     pub firmware: Firmware,
     /// Which kernel to install. Drives the package, the headers, the initramfs
     /// presets and the kernel paths the boot entry names.
@@ -95,8 +93,6 @@ impl std::fmt::Debug for InstallConfig {
             .field("disk", &self.disk)
             .field("swap", &self.swap)
             .field("require_strong_password", &self.require_strong_password)
-            .field("enable_aur", &self.enable_aur)
-            .field("install_shelly", &self.install_shelly)
             .field("firmware", &self.firmware)
             .field("kernel", &self.kernel)
             .field("nvidia_legacy", &self.nvidia_legacy)
@@ -105,12 +101,7 @@ impl std::fmt::Debug for InstallConfig {
 }
 
 impl InstallConfig {
-    /// Name of the boot menu entry for the installed system.
-    ///
-    /// refind-btrfs derives a stanza per snapshot from the entry carrying this
-    /// name, so it has to be exactly what `refind::refind_conf` writes. A
-    /// decorated name — "noos-os (linux-zen)" — reads better and would leave
-    /// the snapshots without a menu to appear under.
+    /// Name of the boot menu entry and distributor identifier (`GRUB_DISTRIBUTOR`).
     pub const OS_ENTRY_NAME: &'static str = "noos-os";
 
     /// Everything that can be checked before touching a single byte on disk.

@@ -45,7 +45,7 @@ if [[ -n $BUILD_USER && $BUILD_USER != root ]]; then
   readonly BUILD_HOME="$(getent passwd "$BUILD_USER" | cut -d: -f6)"
   # cargo lives in ~/.cargo (rustup, no root), and Cherry Studio's managed
   # toolchain directory is where bun is.
-  readonly BUILD_PATH="${BUILD_HOME}/.cargo/bin:${BUILD_HOME}/.cherrystudio/bin:/usr/local/bin:/usr/bin"
+  readonly BUILD_PATH="${BUILD_HOME}/.cargo/bin:${BUILD_HOME}/.bun/bin:${BUILD_HOME}/.cherrystudio/bin:/usr/local/bin:/usr/bin"
 elif [[ -n ${CI:-} ]]; then
   readonly BUILD_AS="root"
   readonly BUILD_HOME="/root"
@@ -84,6 +84,7 @@ as_builder "
   # keyboard.rs can never end up with a stale or missing table.
   bun scripts/generate-keymaps.js
   bun scripts/generate-map-data.js
+  bun scripts/generate-fastfetch-logo.js
   cd '${ROOT}/installer'
   bun install --frozen-lockfile
   # --no-bundle: only the binary is wanted, not a .deb/.rpm/AppImage.
@@ -176,6 +177,13 @@ cp -a "${PROFILE}/." "$ASSEMBLED/"
 install -Dm755 "$INSTALLER_BIN" "${ASSEMBLED}/airootfs/usr/bin/noos-installer"
 echo "  installateur -> airootfs/usr/bin/noos-installer"
 
+# Copy the WhiteSur GRUB2 theme into the profile's `grub/themes/whitesur` tree
+# so `mkarchiso`'s `uefi.grub` bootmode embeds it into `/boot/grub/themes/whitesur`
+# on both the ISO9660 filesystem and the FAT `efiboot.img`.
+install -d -m 0755 "${ASSEMBLED}/grub/themes/whitesur"
+cp -a "${PROFILE}/airootfs/usr/share/grub/themes/whitesur/." "${ASSEMBLED}/grub/themes/whitesur/"
+echo "  thème GRUB WhiteSur -> grub/themes/whitesur"
+
 step "Construction de l'ISO"
 mkdir -p "$OUT_DIR"
 
@@ -193,7 +201,19 @@ mkdir -p "$OUT_DIR"
 # be sure the ISO matches the source.
 if [[ -d $WORK_DIR ]]; then
   echo "  suppression du cache de build (work/) pour garantir un résultat à jour"
-  rm -rf "$WORK_DIR"
+  for mnt in "$WORK_DIR/x86_64/airootfs/dev/pts" \
+             "$WORK_DIR/x86_64/airootfs/dev/shm" \
+             "$WORK_DIR/x86_64/airootfs/dev" \
+             "$WORK_DIR/x86_64/airootfs/proc" \
+             "$WORK_DIR/x86_64/airootfs/sys" \
+             "$WORK_DIR/x86_64/airootfs/run" \
+             "$WORK_DIR/x86_64/airootfs"; do
+    umount -Rl "$mnt" 2>/dev/null || true
+  done
+  if findmnt -R -n "$WORK_DIR" >/dev/null 2>&1; then
+    die "des points de montage système sont encore actifs sous $WORK_DIR — refus de supprimer pour protéger /dev de l'hôte"
+  fi
+  rm -rf --one-file-system "$WORK_DIR"
 fi
 
 # Removing the previous ISO makes the check below mean something: without it,
@@ -207,40 +227,19 @@ rm -f "$OUT_DIR"/*.iso "$OUT_DIR"/*.iso.sha256
 
 mkarchiso -v -w "$WORK_DIR" -o "$OUT_DIR" "$ASSEMBLED"
 
-# rEFInd into the EFI image, in a second mkarchiso pass.
-#
-# This is a workaround for a limit of mkarchiso, and it is worth being precise
-# about why it takes this shape.
-#
-# mkarchiso has no rEFInd bootmode, and it reads only `loader.conf` and
-# `entries/*.conf` out of a profile — so there is no supported way to hand it an
-# extra EFI *binary*. What it does do is copy `${WORK_DIR}/iso/EFI` wholesale
-# into the FAT image it builds, and that directory is assembled with `install`,
-# not purged, so files placed in it survive a rebuild.
-#
-# Hence: build once, drop rEFInd into the assembled tree, invalidate the markers
-# that cover the boot image and the final packing, build again. The squashfs and
-# the pacstrap are cached, so the second pass costs seconds.
-#
-# The markers are mkarchiso's `_run_once` files. Fewer than the ones removed
-# here and the image keeps its old contents — which is the stale-ISO trap this
-# script fights everywhere else, now used deliberately.
-step "rEFInd et Secure Boot dans l'image EFI"
+step "GRUB et Secure Boot dans l'image EFI"
 
 readonly ISO_TREE="${WORK_DIR}/iso"
-readonly REFIND_SRC="${WORK_DIR}/refind-src"
 readonly PACSTRAP_ROOT="${WORK_DIR}/x86_64/airootfs"
 readonly BOOT_STAGE_DIR="${WORK_DIR}/x86_64/boot"
 readonly SHIM_DIR="${PACSTRAP_ROOT}/usr/share/shim-signed"
 readonly SB_DIR="${WORK_DIR}/sb-keys"
+readonly EFIBOOT_IMG="${WORK_DIR}/efiboot.img"
 
 [[ -d $ISO_TREE ]] || die "mkarchiso n'a pas laissé d'arbre ISO dans ${WORK_DIR}"
+[[ -e $EFIBOOT_IMG ]] || die "mkarchiso n'a pas généré ${EFIBOOT_IMG}"
 
-# The rEFInd binaries and signing tools come from packages on the build host,
-# never from a copy in git: a committed `.efi` would be a copy of somebody
-# else's binary that no review can check, and it would drift from the packaged
-# version.
-for host_pkg in refind sbsigntools openssl; do
+for host_pkg in grub sbsigntools openssl mtools; do
   if ! pacman -Qq "$host_pkg" >/dev/null 2>&1; then
     echo "  installation de $host_pkg sur l'hôte"
     pacman -S --needed --noconfirm "$host_pkg"
@@ -277,43 +276,25 @@ sb_sign_file() {
     || die "vérification sbverify échouée sur $dst"
 }
 
-rm -rf "$REFIND_SRC"
-install -d -m 0755 "${ISO_TREE}/EFI/BOOT" \
-  "${ISO_TREE}/EFI/refind" \
-  "${ISO_TREE}/EFI/refind/keys" \
-  "${ISO_TREE}/EFI/refind/drivers_x64" \
-  "${ISO_TREE}/EFI/refind/themes/noos"
-
 # Stage the Secure Boot hand-off in /EFI/BOOT:
 #
 #   BOOTx64.EFI (shimx64.efi, Microsoft-signed)
-#     -> grubx64.efi (systemd-bootx64.efi, MOK-signed)
-#       -> /EFI/refind/refind_x64.efi (MOK-signed)
-#         -> /noos/boot/x86_64/vmlinuz-linux (MOK-signed)
-#
-# mkarchiso's `_make_common_bootmode_uefi.systemd-boot_copy_files` copies
-# `${PACSTRAP_ROOT}/usr/lib/systemd/boot/efi/systemd-bootx64.efi` onto
-# `${ISO_TREE}/EFI/BOOT/BOOTx64.EFI` on the second pass. So we sign the real
-# `systemd-bootx64.efi` into `grubx64.efi` first, then replace the source file
-# in `${PACSTRAP_ROOT}` with `shimx64.efi` (the squashfs was already built in
-# the first pass, so `airootfs.sfs` is untouched).
-readonly SDBOOT_SRC="${PACSTRAP_ROOT}/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
-[[ -f "$SDBOOT_SRC" ]] || die "systemd-bootx64.efi introuvable dans ${PACSTRAP_ROOT}"
-sb_sign_file "$SDBOOT_SRC" "${ISO_TREE}/EFI/BOOT/grubx64.efi"
+#     -> grubx64.efi (standalone GRUB with WhiteSur theme & sbat.csv, MOK-signed)
+#       -> /noos/boot/x86_64/vmlinuz-linux (MOK-signed)
+readonly GRUB_STANDALONE_SRC="${ISO_TREE}/EFI/BOOT/BOOTx64.EFI"
+[[ -f "$GRUB_STANDALONE_SRC" ]] || die "BOOTx64.EFI (GRUB standalone) introuvable dans ${ISO_TREE}/EFI/BOOT"
+sb_sign_file "$GRUB_STANDALONE_SRC" "${ISO_TREE}/EFI/BOOT/grubx64.efi"
 install -m 0644 "${SHIM_DIR}/mmx64.efi" "${ISO_TREE}/EFI/BOOT/mmx64.efi"
-install -m 0644 "${SHIM_DIR}/shimx64.efi" "$SDBOOT_SRC"
 install -m 0644 "${SHIM_DIR}/shimx64.efi" "${ISO_TREE}/EFI/BOOT/BOOTx64.EFI"
 
-# Sign the UEFI shell in place before the second pass copies it to /shellx64.efi.
-readonly SHELL_SRC="${PACSTRAP_ROOT}/usr/share/edk2-shell/x64/Shell_Full.efi"
-if [[ -f "$SHELL_SRC" ]]; then
-  sb_sign_file "$SHELL_SRC" "$SHELL_SRC"
+# Sign the UEFI shell if present.
+if [[ -f "${ISO_TREE}/shellx64.efi" ]]; then
+  sb_sign_file "${ISO_TREE}/shellx64.efi" "${ISO_TREE}/shellx64.efi"
 fi
 
-# Sign the live kernel in the staging directory that `_make_boot_on_iso9660`
-# and `_make_boot_on_fat` both read from on the second pass.
-for kernel in "${BOOT_STAGE_DIR}"/vmlinuz-*; do
-  [[ -f "$kernel" ]] || die "aucun noyau trouvé dans ${BOOT_STAGE_DIR}"
+# Sign the live kernel in both the staging directory and the ISO tree.
+for kernel in "${BOOT_STAGE_DIR}"/vmlinuz-* "${ISO_TREE}/noos/boot/x86_64"/vmlinuz-*; do
+  [[ -f "$kernel" ]] || continue
   sb_sign_file "$kernel" "$kernel"
 done
 
@@ -322,186 +303,30 @@ done
 install -m 0644 "${SB_DIR}/noos-mok.cer" "${ISO_TREE}/noos-mok.cer"
 install -m 0644 "${SB_DIR}/noos-mok.cer" "${ISO_TREE}/EFI/noos-mok.cer"
 install -m 0644 "${SB_DIR}/noos-mok.cer" "${ISO_TREE}/EFI/BOOT/noos-mok.cer"
-install -m 0644 "${SB_DIR}/noos-mok.cer" "${ISO_TREE}/EFI/refind/keys/noos-mok.cer"
 
-# rEFInd's runtime files, copied whole and signed.
-#
-# **`icons/` is not decoration — without it rEFInd refuses to draw.** Its own
-# manual, twice over:
-#
-#   Text-only mode is implicitly set if rEFInd cannot find either a subdirectory
-#   called `icons` or a subdirectory named by `icons_dir`.
-#
-# The first build of this medium copied only the binary and one driver, so the
-# menu came up in text mode — the blue bar and the plain list — and the theme
-# was never going to appear whatever it contained. That is what the first real
-# boot showed, and it was read as the machine's fault rather than this one's.
-#
-# `fonts/` is the same story for text: rEFInd's font is a PNG image, and the
-# Arch wiki's installation steps say to copy both directories.
-install -d -m 0755 "${ISO_TREE}/EFI/refind/icons" \
-  "${ISO_TREE}/EFI/refind/fonts" \
-  "${ISO_TREE}/EFI/refind/drivers_x64"
+# Rebuild `efiboot.img` (32 MiB FAT) and inject the signed GRUB binary,
+# Microsoft-signed shim, MokManager, MOK certificate, GRUB config + WhiteSur
+# theme, and signed UEFI shell.
+rm -f "$EFIBOOT_IMG"
+mkfs.fat -C -n ARCHISO_EFI "$EFIBOOT_IMG" 32768 >/dev/null
+mcopy -s -i "$EFIBOOT_IMG" "${ISO_TREE}/EFI" "${ISO_TREE}/boot" "::/"
+mcopy -o -i "$EFIBOOT_IMG" "${ISO_TREE}/noos-mok.cer" "::/noos-mok.cer"
+if [[ -f "${ISO_TREE}/shellx64.efi" ]]; then
+  mcopy -o -i "$EFIBOOT_IMG" "${ISO_TREE}/shellx64.efi" "::/shellx64.efi"
+fi
 
-sb_sign_file /usr/share/refind/refind_x64.efi "${ISO_TREE}/EFI/refind/refind_x64.efi"
-install -m 0644 "${SHIM_DIR}/mmx64.efi" "${ISO_TREE}/EFI/refind/mmx64.efi"
-cp -a /usr/share/refind/icons/. "${ISO_TREE}/EFI/refind/icons/"
-cp -a /usr/share/refind/fonts/. "${ISO_TREE}/EFI/refind/fonts/"
-
-# Every driver the package carries, signed with our MOK key.
-#
-# rEFInd inherits the firmware's filesystems, which on a UEFI PC is FAT and
-# ISO9660, so `iso9660_x64.efi` is what makes the medium's own volume readable.
-# The rest cost a fraction of a megabyte and are what let a machine see a disk
-# it otherwise could not — the point of a live medium.
-for driver in /usr/share/refind/drivers_x64/*.efi; do
-  [[ -f "$driver" ]] || continue
-  sb_sign_file "$driver" "${ISO_TREE}/EFI/refind/drivers_x64/$(basename "$driver")"
-done
-
-# The theme, from the one committed copy.
-install -m 0644 "${PROFILE}/airootfs/usr/share/noos/refind-theme/"*.png \
-  "${ISO_TREE}/EFI/refind/themes/noos/"
-
-# `theme.conf`, which the live configuration includes.
-#
-# Missing on the first build, and nothing said so: the `include` line simply
-# resolved to a file that did not exist, so rEFInd drew a plain menu with no
-# banner and no selection images. The installer writes this file on the
-# *target*; the medium needs its own copy, and this is it.
-#
-# Written here rather than read from the installer's rendering, so it stays a
-# visible part of the live medium's configuration — the same way the stanza
-# below is written rather than generated. A check fails the build if the two
-# ever disagree about which images exist.
-cat > "${ISO_TREE}/EFI/refind/themes/noos/theme.conf" <<'THEME'
-# Generated by scripts/build-iso.sh for the live medium.
-#
-# rEFInd renders bitmaps, not vectors: everything here is a PNG produced from
-# noos-svg.svg by scripts/generate-refind-theme.js.
-
-banner themes/noos/background.png
-banner_scale fillscreen
-
-selection_big themes/noos/selection_big.png
-selection_small themes/noos/selection_small.png
-
-big_icon_size 128
-small_icon_size 48
-THEME
-
-# The live medium's configuration.
-#
-# No `archisosearchuuid`: mkarchiso substitutes that UUID into the systemd-boot
-# entry, but it is generated during the build and a static file here cannot know
-# it. `archisolabel` is equally good and known in advance — the archiso hook
-# falls back to `/dev/disk/by-label/${archisolabel}`, which is why it is the one
-# passed. See ISO_LABEL below.
-# `declare -A` first, and it is not decoration: `file_permissions` in a profile
-# is an *associative* array, written the way the releng profile writes it —
-# `["/root"]="0:0:750"` — and relies on its consumer having declared it.
-# mkarchiso does exactly this before sourcing. Reading the profile without it
-# makes bash treat `["/root"]` as an arithmetic expression in an indexed array
-# and abort with "/root : erreur de syntaxe arithmétique".
-ISO_LABEL="$( ( declare -A file_permissions; source "${PROFILE}/profiledef.sh"; printf '%s' "$iso_label" ) )"
-[[ -n $ISO_LABEL ]] || die "iso_label introuvable dans profiledef.sh"
-
-cat > "${ISO_TREE}/EFI/refind/refind.conf" <<EOF
-# Generated by scripts/build-iso.sh for the live medium.
-
-timeout 10
-scanfor internal,external,optical,netboot,manual
-
-# Ours, by name. Without it the countdown picks whichever entry rEFInd happened
-# to list first — on the first run of this medium that was a kernel found on an
-# installed system's ESP, which booted without a root= and dropped into an
-# emergency shell. A live medium should default to itself.
-default_selection "noos-os live"
-
-# rEFInd scans every disk it can read, not just the medium it was booted from,
-# so on a machine that already has noos-os installed the menu fills with that
-# system's kernels and bootloaders — and one of them, a kernel with no \`root=\`
-# of its own, sits at the top and gets picked. That is what happened on the
-# first boot of this medium: it tried the *installed* system's kernel and
-# dropped into an emergency shell, which reads as the live medium being broken.
-#
-# \`NOOS-ESP\` is this distribution's own ESP label, so on a live installer this
-# hides what we put there ourselves. A machine with Windows or another Linux is
-# left visible: being able to reach an existing system from the medium is a
-# rescue worth keeping, and those entries are labelled for what they are.
-dont_scan_volumes "NOOS-ESP"
-
-# Helper EFI binaries that live in the image we were booted from. The shim and
-# systemd-boot binaries we chainload *from* would loop straight back here;
-# MokManager and the shell are already offered by rEFInd in its tool row, so the
-# auto-detected copies would be duplicates.
-dont_scan_files bootx64.efi,grubx64.efi,mmx64.efi,shimx64.efi,systemd-bootx64.efi,shellx64.efi
-
-include themes/noos/theme.conf
-
-menuentry "noos-os live" {
-    icon /EFI/refind/themes/noos/os_noos.png
-    volume "$ISO_LABEL"
-    loader /noos/boot/x86_64/vmlinuz-linux
-    initrd /noos/boot/x86_64/initramfs-linux.img
-    # Quoted, and it is not cosmetic: rEFInd reads a bare \`options\` value as a
-    # single token, so only \`archisobasedir=noos\` arrived and \`archisolabel\`
-    # never reached the kernel. The archiso hook then had no device to mount —
-    # it reported \`Mounting '' to /run/archiso/bootmnt\` and gave up after 30
-    # seconds. The rEFInd sample config quotes this line for the same reason.
-    options "archisobasedir=noos archisolabel=$ISO_LABEL quiet splash"
-}
-EOF
-
-echo "  $(basename "$ISO_LABEL") : noyau lu sur le volume ISO9660"
-
-# Invalidate the markers covering the boot image and the packing. Everything
-# else — pacstrap, the squashfs — is reused.
+# Invalidate only the final ISO image packing markers so xorriso repacks the
+# updated ISO_TREE and EFIBOOT_IMG in seconds.
 for marker in \
-  "$WORK_DIR"/base._make_boot_on_fat \
-  "$WORK_DIR"/base._make_boot_on_iso9660 \
-  "$WORK_DIR"/base._make_bootmode_uefi.systemd-boot \
   "$WORK_DIR"/iso._build_iso_image \
   "$WORK_DIR"/build._build_buildmode_iso ; do
   [[ -e $marker ]] && rm -f "$marker"
 done
-rm -f "$WORK_DIR"/efiboot.img
 
-echo "  seconde passe mkarchiso (squashfs en cache)"
+echo "  seconde passe mkarchiso (repaquetage ISO avec GRUB signé + Secure Boot)"
 rm -f "$OUT_DIR"/*.iso "$OUT_DIR"/*.iso.sha256
 mkarchiso -v -w "$WORK_DIR" -o "$OUT_DIR" "$ASSEMBLED"
 
-# The image was really rebuilt, not reused.
-#
-# Without this the second pass would silently keep the first image — which
-# contains systemd-boot and no rEFInd — and the only symptom would be a live
-# medium that boots into a menu nobody recognises.
-EFIBOOT_IMG="${WORK_DIR}/efiboot.img"
-[[ -e $EFIBOOT_IMG ]] || die "mkarchiso n'a pas reconstruit l'image EFI"
-# The files themselves are checked just below, by extraction — this only proves
-# the second pass rebuilt anything at all, which is what the markers above are
-# for and the one thing that could still go wrong silently.
-
-# The theme, and its configuration file with it.
-#
-# The first build shipped the four images and not `theme.conf`, so the live
-# configuration's `include` resolved to nothing: rEFInd drew a plain menu with
-# no banner and no selection highlights, and said nothing about it. Checking the
-# images alone would have missed it — the file that was missing is the one that
-# *names* them.
-# Extracted, not listed.
-#
-# Grepping a FAT directory listing for a name is fragile in a way that took two
-# tries to see: FAT gives every entry a short 8.3 name, and `os_noos.png` *fits*
-# in 8.3 — so it gets no long-name entry and `mdir` prints it as `os_noos  png`,
-# while `selection_big.png` is too long and is printed as `SELECT~1` with its
-# long name trailing. One of the two breaks any plain grep.
-#
-# `mcopy` has neither problem: it resolves 8.3 and long names alike, and it
-# fails on a name that is not there — which is the whole question being asked.
-# Its own scratch directory: this runs right after the second mkarchiso, long
-# before the verification step creates `.verify`. Reusing that one would have
-# made `set -u` abort the build on an unbound variable.
 readonly EFI_CHECK_DIR="${WORK_DIR}/efi-check"
 mkdir -p "$EFI_CHECK_DIR"
 
@@ -511,32 +336,23 @@ readonly EFI_FILES=(
   /EFI/BOOT/mmx64.efi
   /EFI/BOOT/noos-mok.cer
   /EFI/noos-mok.cer
-  /EFI/refind/refind_x64.efi
-  /EFI/refind/mmx64.efi
-  /EFI/refind/keys/noos-mok.cer
-  /EFI/refind/refind.conf
-  /EFI/refind/themes/noos/theme.conf
-  /EFI/refind/themes/noos/background.png
-  /EFI/refind/themes/noos/os_noos.png
-  /EFI/refind/themes/noos/selection_big.png
-  /EFI/refind/themes/noos/selection_small.png
-  # Not decoration: without an icons directory rEFInd silently runs in
-  # text-only mode, whatever the theme says.
-  /EFI/refind/icons/os_linux.png
-  /EFI/refind/fonts/liberation-mono-regular-14.png
-  /EFI/refind/drivers_x64/iso9660_x64.efi
+  /boot/grub/grub.cfg
+  /boot/grub/themes/whitesur/theme.txt
+  /boot/grub/themes/whitesur/background.jpg
+  /boot/grub/themes/whitesur/icons/noos-os.png
+  /boot/grub/themes/whitesur/icons/noos_os.png
 )
 
 for file in "${EFI_FILES[@]}"; do
   target="${EFI_CHECK_DIR}/$(basename "$file")"
-  mcopy -o -i "$EFIBOOT_IMG" "::${file}" "$target" 2>/dev/null \
+  rm -f "$target"
+  mcopy -o -i "$EFIBOOT_IMG" "::${file}" "$target" </dev/null 2>/dev/null \
     || die "l'image EFI n'a pas ${file} : le média live ne s'amorcerait pas comme prévu"
-  # A zero-byte file is present and useless; the images are tens of kilobytes.
   if [[ $(stat -c%s "$target") -eq 0 ]]; then
     die "${file} est vide dans l'image EFI"
   fi
 done
-echo "  média live dans l'image EFI (rEFInd, config, thème et ses 4 images)"
+echo "  média live dans l'image EFI (GRUB, thème WhiteSur et Secure Boot)"
 
 step "Terminé"
 readonly ISO="$(ls "$OUT_DIR"/*.iso 2>/dev/null | head -1)"
@@ -660,6 +476,19 @@ else
   die "root/.bash_profile est absent : l'installateur ne sera pas lancé"
 fi
 
+if unsquashfs -l "$VERIFY_DIR/airootfs.sfs" usr/bin/fish 2>/dev/null | grep -q fish \
+   && unsquashfs -cat "$VERIFY_DIR/airootfs.sfs" etc/fish/conf.d/noos.fish 2>/dev/null | grep -q 'set -g fish_greeting'; then
+  check "shell fish (sans message d'accueil)" "oui"
+else
+  die "fish ou /etc/fish/conf.d/noos.fish est absent de l'ISO"
+fi
+
+if unsquashfs -cat "$VERIFY_DIR/airootfs.sfs" etc/pacman.conf 2>/dev/null | grep -q '^\[multilib\]$'; then
+  check "dépôt multilib activé (live)" "oui"
+else
+  die "le dépôt [multilib] n'est pas activé dans /etc/pacman.conf du live"
+fi
+
 # Networking. Two separate things can be missing and both look like "no
 # internet": the interface is never configured, or it is configured but names
 # do not resolve. The second is the easier one to overlook.
@@ -770,60 +599,66 @@ else
 fi
 
 # The live boot chain, checked on the built artifact.
-#
-# Both files are read out of the ISO rather than out of the profile: mkarchiso
-# copies `EFI/` and `loader/` onto the ISO9660 filesystem as well as into the
-# EFI image, so what is read here is what a machine will actually be booted
-# from — including that the substitutions below reached it.
-#
-# The kernel parameters moved. They used to sit on the systemd-boot entry; they
-# are now in rEFInd's own configuration, because rEFInd is what loads the kernel.
 if xorriso -osirrox on -indev "$ISO" \
-     -extract /EFI/refind/refind.conf "$VERIFY_DIR/refind.conf" 2>/dev/null; then
-  check "configuration rEFInd sur le média" "oui"
+     -extract /boot/grub/grub.cfg "$VERIFY_DIR/grub.cfg" 2>/dev/null; then
+  check "configuration GRUB sur le média" "oui"
 else
-  die "l'ISO ne contient pas /EFI/refind/refind.conf : le live ne démarrerait pas"
+  die "l'ISO ne contient pas /boot/grub/grub.cfg : le live ne démarrerait pas"
 fi
 
-for expected in 'quiet splash' 'archisobasedir=noos' 'archisolabel=' 'menuentry "noos-os live"'; do
-  grep -qF "$expected" "$VERIFY_DIR/refind.conf" \
-    || die "la configuration rEFInd du live ne contient pas « $expected »"
+for expected in 'quiet splash' 'archisobasedir=noos' 'themes/whitesur/theme.txt' 'menuentry "noos-os live"'; do
+  grep -qF "$expected" "$VERIFY_DIR/grub.cfg" \
+    || die "la configuration GRUB du live ne contient pas « $expected »"
 done
-check "paramètres du noyau live" "quiet splash + archiso"
+check "paramètres du noyau live" "quiet splash + archiso + WhiteSur"
 
-# The hand-off from systemd-boot. Without it the live medium would show
-# systemd-boot's own menu — a screen nobody recognises as noos-os.
-if xorriso -osirrox on -indev "$ISO" \
-     -extract /loader/entries/01-refind.conf "$VERIFY_DIR/entry.conf" 2>/dev/null \
-   && grep -qE '^efi[[:space:]]+/EFI/refind/refind_x64\.efi' "$VERIFY_DIR/entry.conf"; then
-  check "chaînage systemd-boot vers rEFInd" "oui"
-else
-  die "l'entrée systemd-boot ne chaîne pas vers rEFInd"
-fi
-
-# The timeout, which is what makes the hand-off invisible.
-if xorriso -osirrox on -indev "$ISO" \
-     -extract /loader/loader.conf "$VERIFY_DIR/loader.conf" 2>/dev/null \
-   && grep -qE '^timeout +0$' "$VERIFY_DIR/loader.conf"; then
-  check "menu systemd-boot masqué" "oui"
-else
-  die "loader.conf n'est pas en timeout 0 : le menu systemd-boot apparaîtrait"
-fi
-
-# The theme, on the medium the installer reads it from. `install_refind` copies
-# it onto the target's ESP from /usr/share/noos/refind-theme.
-for image in background.png os_noos.png selection_big.png selection_small.png; do
-  unsquashfs -l "$VERIFY_DIR/airootfs.sfs" "usr/share/noos/refind-theme/$image" 2>/dev/null \
-    | grep -q "$image" || die "le thème rEFInd n'a pas $image dans l'ISO"
+# The WhiteSur GRUB2 theme, both on the ISO boot tree and inside airootfs for
+# `install_grub` to copy onto the target.
+for asset in theme.txt background.jpg icons/noos-os.png icons/noos_os.png icons/snapshots.png; do
+  unsquashfs -l "$VERIFY_DIR/airootfs.sfs" "usr/share/grub/themes/whitesur/$asset" 2>/dev/null \
+    | grep -q "$(basename "$asset")" || die "le thème GRUB WhiteSur n'a pas $asset dans l'ISO"
 done
-check "thème rEFInd sur le média" "4 images"
+check "thème GRUB WhiteSur sur le média" "présent (live + cible)"
+
+# The KDE WhiteSur Liquid archive, extracted onto the target when the user
+# selects KDE Plasma.
+if unsquashfs -l "$VERIFY_DIR/airootfs.sfs" "usr/share/noos/whitesur-kde/whitesur-liquid.tar.zst" 2>/dev/null \
+     | grep -q "whitesur-liquid.tar.zst" \
+   && tar --zstd -tf "$SYMLINK_ROOT/usr/share/noos/whitesur-kde/whitesur-liquid.tar.zst" \
+        usr/share/wallpapers/noos/contents/images/2752x1536.jpg >/dev/null 2>&1 \
+   && tar --zstd -xOf "$SYMLINK_ROOT/usr/share/noos/whitesur-kde/whitesur-liquid.tar.zst" \
+        usr/share/plasma/look-and-feel/com.github.vinceliuice.WhiteSur-dark/contents/layouts/org.kde.plasma.desktop-layout.js 2>/dev/null \
+      | grep -q 'org.kde.plasma.kicker' \
+   && tar --zstd -xOf "$SYMLINK_ROOT/usr/share/noos/whitesur-kde/whitesur-liquid.tar.zst" \
+        usr/share/plasma/look-and-feel/com.github.vinceliuice.WhiteSur-dark/contents/layouts/org.kde.plasma.desktop-layout.js 2>/dev/null \
+      | grep -q 'com.mitchellh.ghostty.desktop' \
+   && tar --zstd -xOf "$SYMLINK_ROOT/usr/share/noos/whitesur-kde/whitesur-liquid.tar.zst" \
+        usr/share/plasma/look-and-feel/com.github.vinceliuice.WhiteSur-dark/contents/layouts/org.kde.plasma.desktop-layout.js 2>/dev/null \
+      | grep -q 'noos-package-manager.desktop' \
+   && tar --zstd -xOf "$SYMLINK_ROOT/usr/share/noos/whitesur-kde/whitesur-liquid.tar.zst" \
+        usr/share/plasma/look-and-feel/com.github.vinceliuice.WhiteSur-dark/contents/layouts/org.kde.plasma.desktop-layout.js 2>/dev/null \
+      | grep -q '/usr/share/wallpapers/noos/contents/images/2752x1536.jpg'; then
+  check "thème KDE WhiteSur Liquid (Menu des applications + Ghostty + noos-package-manager + fond d'écran noos-os)" "présent"
+else
+  die "whitesur-liquid.tar.zst est absent ou n'utilise pas org.kde.plasma.kicker / Ghostty / noos-package-manager / fond d'écran noos-os"
+fi
+
+# Fastfetch profile (sample 13) and 45°-tilted infinity logo.
+if unsquashfs -l "$VERIFY_DIR/airootfs.sfs" "etc/fastfetch/config.jsonc" 2>/dev/null \
+     | grep -q "config.jsonc" \
+   && unsquashfs -l "$VERIFY_DIR/airootfs.sfs" "usr/share/noos/fastfetch/noos-infinity.png" 2>/dev/null \
+     | grep -q "noos-infinity.png"; then
+  check "profil Fastfetch et logo infini 45°" "présents"
+else
+  die "le profil Fastfetch ou noos-infinity.png manque dans l'ISO"
+fi
 
 # Secure Boot verification on the built artifact:
 #   1. BOOTx64.EFI carries Microsoft's UEFI CA signature (shim-signed), and
 #      mmx64.efi carries the vendor signature embedded in shimx64.efi's
 #      .vendor_cert section (Fedora / Red Hat Secure Boot CA in shim-signed)
-#   2. grubx64.efi (systemd-boot), refind_x64.efi, iso9660_x64.efi and the live
-#      kernel vmlinuz-linux all pass `sbverify` against the MOK certificate
+#   2. grubx64.efi (standalone GRUB) and the live kernel vmlinuz-linux pass
+#      `sbverify` against the MOK certificate
 #   3. The DER certificate `noos-mok.cer` is reachable at the ISO root and on
 #      the EFI image for MokManager's "Enroll key from disk"
 #   4. The live squashfs carries `shim-signed` and `sbsign` for the target
@@ -839,11 +674,9 @@ else
   die "mmx64.efi ne porte pas la signature vendeur attendue par shimx64.efi"
 fi
 
-for signed_efi in grubx64.efi refind_x64.efi iso9660_x64.efi; do
-  sbverify --cert "${SB_DIR}/mok.crt" "${EFI_CHECK_DIR}/${signed_efi}" >/dev/null 2>&1 \
-    || die "${signed_efi} dans l'image EFI n'est pas signé avec la clé MOK du build"
-done
-check "binaires EFI signés MOK" "grubx64 + rEFInd + pilotes"
+sbverify --cert "${SB_DIR}/mok.crt" "${EFI_CHECK_DIR}/grubx64.efi" >/dev/null 2>&1 \
+  || die "grubx64.efi dans l'image EFI n'est pas signé avec la clé MOK du build"
+check "binaire EFI signé MOK" "grubx64.efi (GRUB standalone)"
 
 xorriso -osirrox on -indev "$ISO" \
   -extract "/noos/boot/x86_64/vmlinuz-linux" "$VERIFY_DIR/vmlinuz-linux" 2>/dev/null \
