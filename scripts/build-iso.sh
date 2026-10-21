@@ -306,10 +306,14 @@ install -m 0644 "${SB_DIR}/noos-mok.cer" "${ISO_TREE}/EFI/BOOT/noos-mok.cer"
 
 # Rebuild `efiboot.img` (32 MiB FAT) and inject the signed GRUB binary,
 # Microsoft-signed shim, MokManager, MOK certificate, GRUB config + WhiteSur
-# theme, and signed UEFI shell.
+# theme, and signed UEFI shell. Deliberately copy `${ISO_TREE}/boot/grub` rather
+# than `${ISO_TREE}/boot` as a whole so `/boot/<date>.uuid` remains exclusively
+# on the ISO9660 volume where `grub-embed.cfg` searches for it.
 rm -f "$EFIBOOT_IMG"
 mkfs.fat -C -n ARCHISO_EFI "$EFIBOOT_IMG" 32768 >/dev/null
-mcopy -s -i "$EFIBOOT_IMG" "${ISO_TREE}/EFI" "${ISO_TREE}/boot" "::/"
+mmd -i "$EFIBOOT_IMG" "::/boot"
+mcopy -s -i "$EFIBOOT_IMG" "${ISO_TREE}/EFI" "::/"
+mcopy -s -i "$EFIBOOT_IMG" "${ISO_TREE}/boot/grub" "::/boot/"
 mcopy -o -i "$EFIBOOT_IMG" "${ISO_TREE}/noos-mok.cer" "::/noos-mok.cer"
 if [[ -f "${ISO_TREE}/shellx64.efi" ]]; then
   mcopy -o -i "$EFIBOOT_IMG" "${ISO_TREE}/shellx64.efi" "::/shellx64.efi"
